@@ -1,0 +1,77 @@
+Device characteristics
+======================
+
+ drum B430
+  3750rpm (?), 250Kcps (?)
+  2ms transfer time + max. 16ms rotational delay
+
+  62.5 rot/sec  16ms/rot        avg. 8ms delay          1,333T avg delay
+                                500c 2000us               333T transfer
+
+
+ disk B475
+  1500rpm, head/track, 100Kcps
+  5ms transfer time + max. 40ms rotational delay
+
+  25 rot/sec    40ms/rot        avg. 20ms delay         3,333T avg delay
+  0.1c/us transfer time         500c 5000us               833T transfer
+
+
+ tape B421
+  90ips, 200/556cpi, 2400' reel, 18KC/50KC, 320ips high-speed rewind
+  417c gap - 8.3ms
+
+  11.111ms / inch, 556cpi
+  0.75" gap = 8.333ms           1,388.833T
+  0.9" data = 10ms              1,666.666T
+                                3056T
+  2400' - 10 - 14 = 28,512"     1.65" / record  17,280 records 100W
+
+  320ips high-speed rewind
+  1.65+ takes 5.156ms            859T / rec
+
+
+  100W requires 500 BCD chars = 0.9" + 0.75" gap = 1.65" @ 556cpi
+  10' load-point marker ... 14' end-of-reel marker => 28,512" usable
+                                           17280 100W records
+  4.2ms start time + 10ms transfer time + 4.1ms stop time
+       4.2ms  700 Ty
+       4.1ms  683 Ty
+  assume
+      92.0ms  start time @ load-point    15333 Ty
+
+
+ card_in B122
+  200cpm, 80 column, 450 card hopper
+
+  3.333 cards/sec       300,000 usec/card        50,000T
+
+
+ card_out B303
+  100cpm, 80 column, 800 card stacker
+
+  1.666 cards/sec       600,000 usec/card       100,000T
+
+
+ printer B320
+  475lpm, 5ms/line skip
+
+  7.916 lines/sec       126,326 usec/line       21,054T
+
+
+ paper tape reader B 141
+   500cps, 10cpi
+   70c                  140,000 usec/block      23,333T
+
+
+ paper tape punch B 341
+   100cps, 10cpi
+   70c                  700,000 usec            116,667T
+
+
+ console ASR33
+  10cps
+  1000 feet, 10cpi, block: 14W = 70c ~ 1707 blocks
+  4' tape leader, remains 996'
+
+  14W * 5 = 70 chars    70/10 ~ 7sec/line       1,166,667T
