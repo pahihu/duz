@@ -1,56 +1,101 @@
 /* MIX
-
-	012345
-	+AAIFC
-	
-	unit time	10us	inexpensive computer
-				1us		high-priced machine
-    this machine has 6us
-	ADD,SUB,LOAD,STORE,shift,comparisons	2u
-	MOVE 1u+Nx2u
-	MUL	 10u
-	DIV	 12u
-
-    History:
-    ========
-    250616AP    paper tape max size (~ 1000')
-                added teletype
-                added fictitious paper tape reader (B 141) and punch (B 341)
-    250615AP    blk_read/write tmp char buffer for conversion
-                added CR/LF + flush after char I/O out
-                changed LP_LINES to 66
-                fixed instr disasm (print A instead of M), added rJ/ZERO as reg[8] and reg[9]
-                fixed JrN conditions
-                fixed mem_write() w/ FIELD
-                fixed unpack()
-                fixed tape write
-                revised IOchars, added drum, fixed disk seek, added device close
-    250613AP    added disasm in trace
-                changed dev_open() and dev_in/out/ioc order
-    250612AP    blk_read in char mode, skip CRLF
-                input record length SHOULD match (no longer or shorter char mode lines!)
-    250611AP    mix2char was char * instead of char []
-                to_num() fixed
-                fixed I/O evt handling
-
-*/
+ *
+ * 012345
+ * +AAIFC
+ *
+ *  unit time	10us	inexpensive computer
+ *		        1us		high-priced machine
+ *  this machine has 6us
+ *  ADD,SUB,LOAD,STORE,shift,comparisons	2u
+ *  MOVE 1u+Nx2u
+ *  MUL	 10u
+ *  DIV	 12u
+ *
+ *  History:
+ *  ========
+ *  250618AP    CS - control state, changed status() display
+ *              added disk/drum rotational delay
+ *              added stats: nonzero locations, total/idle tyme
+ *              added TRACE (4000), TIMER (4001)
+ *              added -x TRANS format, reformat error messages
+ *  250616AP    paper tape max size (~ 1000')
+ *              added teletype
+ *              added fictitious paper tape reader (B 141) and punch (B 341)
+ *  250615AP    blk_read/write tmp char buffer for conversion
+ *              added CR/LF + flush after char I/O out
+ *              changed LP_LINES to 66
+ *              fixed instr disasm (print A instead of M), added rJ/ZERO as reg[8] and reg[9]
+ *              fixed JrN conditions
+ *              fixed mem_write() w/ FIELD
+ *              fixed unpack()
+ *              fixed tape write
+ *              revised IOchars, added drum, fixed disk seek, added device close
+ *  250613AP    added disasm in trace
+ *              changed dev_open() and dev_in/out/ioc order
+ *  250612AP    blk_read in char mode, skip CRLF
+ *              input record length SHOULD match (no longer or shorter char mode lines!)
+ *  250611AP    mix2char was char * instead of char []
+ *              to_num() fixed
+ *              fixed I/O evt handling
+ *
+ */
 #include <stdlib.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <string.h>
+
+#if defined(NDEBUG)
+# define ASSERT(x)
+#else
+# define ASSERT(x)  __assert(__LINE__,__FUNCTION__,""#x)
+void __assert(int lno, const char *fun, const char *x)
+{
+    fprintf(stderr, "%s:%d: %s failed\n", fun, lno, x);
+    fflush(stderr);
+    exit(1);
+}
+#endif
+
+char *strtolower(char *s)
+{
+    char *p;
+    if ((p = s)) {
+        while ((*p = tolower(*p)))
+            p++;
+    }
+    return s;
+}
+
+
+char *strtoupper(char *s)
+{
+    char *p;
+    if ((p = s)) {
+        while ((*p = toupper(*p)))
+            p++;
+    }
+    return s;
+}
 
 typedef unsigned int Word;
 typedef unsigned char Byte;
 typedef enum {OFF, ON} Toggle;
 
-#define MAX_MEM		3999
+#define MAX_MEM		4001
+#define TRACE       mem[4000]
+#define TIMER       mem[4001]
 
 Word reg[10], mem[MAX_MEM+1], P;
 Toggle OT;
+Toggle CS;
 enum {LESS, EQUAL, GREATER} CI;
+Toggle TRANS;
+char TRANSNM[5+1];
 
-unsigned int Tyme, InstCount;
+FILE *LPT;
+unsigned int Tyme, IdleTyme, InstCount;
 unsigned short freq[MAX_MEM+1];
-Toggle RUN, CY, Trace;
+Toggle RUN, CY;
 
 #define rA	 reg[0]
 #define rI1	 reg[1]
@@ -247,7 +292,7 @@ void sm_div(Word *pquo, Word *prem, Word a, Word x, Word v)
 void chk_adr(Word a, char *msg)
 {
 	if (SIGN(a) || MAG(a) > MAX_MEM) {
-		fprintf(stderr, "%04d: (%s) invalid memory address %d\n", P, msg, w2i(a));
+		fprintf(stderr, "-E-MIX: LOC=%04o M=%04o INV.MEMORY ADDRESS %s\n", P, w2i(a), msg);
 		RUN = OFF;
 		THROW;
 	}
@@ -255,8 +300,8 @@ void chk_adr(Word a, char *msg)
 
 Word mem_read(Word a)
 {
-	chk_adr(a, "mem_read");
-	Tyme++;
+	chk_adr(a, "MEMORY READ");
+	Tyme++; TIMER++;
 	return mem[MAG(a)];
 }
 
@@ -266,8 +311,8 @@ void mem_write(Word a,int f,Word w)
 	unsigned mask;
 	Word v;
 	
-	chk_adr(a, "mem_write");
-	Tyme++;
+	chk_adr(a, "MEMORY WRITE");
+	Tyme++; TIMER++;
 	if (FULL == f) {
 		mem[MAG(a)] = w;
 		return;
@@ -292,10 +337,10 @@ void mem_move(Word src, Word dst, int n)
 {
 	int i;
 
-	chk_adr(src, "move src");
-	chk_adr(dst, "move dst");
-	chk_adr(sm_add(src, n - 1), "move src end");
-	chk_adr(sm_add(dst, n - 1), "move dst end");
+	chk_adr(src, "MOVE SOURCE");
+	chk_adr(dst, "MOVE DEST.");
+	chk_adr(sm_add(src, n - 1), "MOVE SOURCE END");
+	chk_adr(sm_add(dst, n - 1), "MOVE DEST.END");
 	src = MAG(src); dst = MAG(dst);
 		
 	if ((src <= dst && dst < src + n) || (dst <= src && src < dst + n)) {
@@ -402,8 +447,8 @@ Byte asc2mix[NASCCHARS], cr_asc2mix[NASCCHARS];
 #endif
 #define	BIN_RWRITE   "r+b"
 #define	BIN_CREATE   "w+b"
-#define	TXT_RWRITE   "r+"
-#define	TXT_CREATE   "w+"
+#define	TXT_RWRITE   "r+t"
+#define	TXT_CREATE   "w+t"
 struct {
 	char *name;
 	char *fam;
@@ -411,16 +456,18 @@ struct {
 	unsigned blk_size;
 	unsigned in_time;
 	unsigned out_time;
+    unsigned rot_time;
 	unsigned seek_time;
 } IOchar[] = {
-	{ "tape",    BIN_RWRITE,17280, 100,     3056,     3056,     859},
-	{ "disk",    BIN_RWRITE, 4096, 100, 833+3333, 833+3333,       0},
-    { "drum",    BIN_RWRITE,  512, 100, 333+1333, 333+1333,       0},
-	{ "reader",  TXT_RDONLY,    0,  16,    50000,        0,       0},
-	{ "punch",   TXT_APPEND,    0,  16,        0,   100000,       0},
-	{ "printer", TXT_APPEND,    0,  24,        0,    21054,     833},
-	{ "ptape",   TXT_RWRITE, 1707,  14,    23333,   116667,   23333},
-    { NULL,      NULL,          0,  14,        0,  1166667, 1166667},
+    /*     name         fam    max  blk     in      out   rot     seek */
+	{    "tape", BIN_RWRITE, 17280, 100,  3056,    3056,    0,     859 },
+	{    "disk", BIN_RWRITE,  4096, 100,   833,     833, 6666,       0 },
+    {    "drum", BIN_RWRITE,   512, 100,   333,    1333, 2666,       0 },
+	{  "reader", TXT_RDONLY,     0,  16, 50000,       0,    0,       0 },
+	{   "punch", TXT_APPEND,     0,  16,     0,  100000,    0,       0 },
+	{ "printer", TXT_APPEND,     0,  24,     0,   21054,    0,     833 },
+	{   "ptape", TXT_RWRITE,  1707,  14, 23333,  116667,    0,   23333 },
+    {      NULL,       NULL,     0,  14,     0, 1166667,    0, 1166667 },
 };
 
 int devx(int u)
@@ -503,7 +550,7 @@ void blk_read(int u, unsigned adr, Byte cvt_a2m[NASCCHARS])
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "%04d: blk_read(%d,%u) failed\n", P, u, adr);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKREAD FAILED\n", P, u, adr);
 	dev_error(u);
 }
 
@@ -545,7 +592,7 @@ void blk_write(int u, unsigned adr, char cvt_m2a[NMIXCHARS])
 		return;
     }
 ErrOut:
-	fprintf(stderr, "%04d: blk_write(%d,%u) failed\n", P, u, adr);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKWRITE FAILED\n", P, u, adr);
 	dev_error(u);
 }
 
@@ -581,7 +628,7 @@ int dev_open(int u)
 			fd = fopen(devname, BIN_CREATE);
 	}
 	if (NULL == fd) {
-		fprintf(stderr,"%s: device init failed", devname);
+		fprintf(stderr,"-E-MIX: %s init failed", devname);
 		dev_error(u);
 		return 1;
 	}
@@ -601,6 +648,12 @@ void dev_seek(int u, unsigned pos)
 }
 
 
+unsigned diff(unsigned a, unsigned b)
+{
+    return a > b ? a - b : b - a;
+}
+
+
 void dev_ioc(int u,int M)
 {
 	int x;
@@ -615,7 +668,7 @@ void dev_ioc(int u,int M)
             new_pos = MAG(rX) % IOchar[x].max_pos;
             new_track = TRACK(new_pos);
             old_track = TRACK(devs[u].pos);
-			M = old_track > new_track ? old_track - new_track : new_track - old_track;
+			M = diff(old_track, new_track);
 			dev_seek(u, new_pos);
 		} else if (DEV_LP == u) {
 			fprintf(devs[u].fd,"\f");
@@ -626,7 +679,7 @@ void dev_ioc(int u,int M)
 			M = devs[u].pos;
 			dev_seek(u, 0);
 		} else {
-			fprintf(stderr, "%04d: IOC (%d,%04d) unsupported\n", P, u, M);
+			fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IOC UNSUPPORTED\n", P, u, M);
 			dev_error(u);
 			return;
 		}
@@ -649,6 +702,44 @@ void dev_ioc(int u,int M)
 	}
 }
 
+typedef enum {DO_IOC, DO_IN, DO_OUT} EventType;
+
+struct __Event {
+    EventType what;
+    unsigned when;
+    Word M;
+    int next;
+} events[MAX_DEVS];
+int EventH;
+
+
+void dev_schedule(unsigned when, EventType what, int u, Word M)
+{
+    int i, p;
+
+    ASSERT(0 == events[u].next);
+    ASSERT(DO_NOTHING == events[u].what);
+
+    events[u].what = what;
+    events[u].when = when;
+    events[u].M = M;
+
+    i = EventH;
+    while (0 != events[i].next && events[i].when <= when) {
+        p = i;
+        i = events[i].next;
+    }
+    if (EventH == i) { /* head */
+        events[u].next = EventH;
+        EventH = u;
+    } else if (0 == events[i].next) { /* tail */
+        events[i].next = u;
+    } else { /* middle */
+        events[p].next = u;
+        events[u].next = i;
+    }
+}
+
 
 void dev_in(int u, Word M)
 {
@@ -656,8 +747,8 @@ void dev_in(int u, Word M)
 	char *errmsg;
 	
 	x = devx(u);
-	chk_adr(M, "IN buffer");
-	chk_adr(M + IOchar[x].blk_size, "IN buffer end");
+	chk_adr(M, "IN BUFFER");
+	chk_adr(M + IOchar[x].blk_size, "IN BUFFER END");
 	
 	M = MAG(M);
 
@@ -670,18 +761,19 @@ void dev_in(int u, Word M)
 		}
 	} else if (u <= DEV_DK) {
 		dev_ioc(u, 0);
+        devs[u].evt += IOchar[x].rot_time * diff(Tyme & 63, BYTE(rX)) / 64.0;
 		blk_read(u, MAG(M), NULL);
 	} else if (DEV_CR == u) {
 		blk_read(u, MAG(M), cr_asc2mix);
 	} else if (DEV_PT == u) {
 		blk_read(u, MAG(M), asc2mix);
 	} else {
-		errmsg = "unsupported"; goto ErrOut;
+		errmsg = "UNSUPPORTED"; goto ErrOut;
 	}
 	devs[u].evt += IOchar[x].in_time;
 	return;
 ErrOut:
-	fprintf(stderr, "%04d: IN (%d,%04d) %s\n", P, u, M, errmsg);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IN %s\n", P, u, M, errmsg);
 	dev_error(u);
 }
 
@@ -692,52 +784,76 @@ void dev_out(Word u,Word M)
 	char *errmsg;
 	
 	x = devx(u);
-	chk_adr(M, "OUT buffer");
-	chk_adr(M + IOchar[x].blk_size, "OUT buffer end");
+	chk_adr(M, "OUT BUFFER");
+	chk_adr(M + IOchar[x].blk_size, "OUT BUFFER END");
 	
 	M = MAG(M);
 
 	devs[u].evt = Tyme;
 	if (u <= DEV_MT) {
 		if (devs[u].pos > IOchar[x].max_pos) {
-			errmsg = "tape full"; goto ErrOut;
+			errmsg = "MAG.TAPE FULL"; goto ErrOut;
 		}
 		blk_write(u, M, NULL);
 	    devs[u].max_pos = devs[u].pos;
 	} else if (u <= DEV_DK) {
 		dev_ioc(u, 0);
+        devs[u].evt += IOchar[x].rot_time * diff(Tyme & 63, BYTE(rX)) / 64.0;
 		blk_write(u, M, NULL);
 	} else if (DEV_CR < u) {
 		blk_write(u, M, u == DEV_CP ? cr_mix2asc : mix2asc);
     } else if (DEV_PT == u) {
 		if (devs[u].pos > IOchar[x].max_pos) {
-			errmsg = "paper tape full"; goto ErrOut;
+			errmsg = "PAPER TAPE FULL"; goto ErrOut;
 		}
 	} else {
-		errmsg = "unsupported"; goto ErrOut;
+		errmsg = "UNSUPPORTED"; goto ErrOut;
 	}
 	devs[u].evt += IOchar[x].out_time;
 	return;
 ErrOut:
-	fprintf(stderr, "%04d: OUT (%d,%04d) %s\n", P, u, M, errmsg);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.OUT %s\n", P, u, M, errmsg);
 	dev_error(u);
+}
+
+
+void lapse(unsigned t)
+{
+    unsigned dt;
+
+    if (Tyme < t) {
+        dt = t - Tyme;
+        IdleTyme += dt; TIMER += dt;
+        Tyme = t;
+    }
+}
+
+
+void nl(void)
+{
+    fprintf(LPT, "\n");
+}
+
+void bprint(Byte w)
+{
+	fprintf(LPT, "%02o ", w);
 }
 
 
 void wprint(Word w)
 {
-	fprintf(stderr, "%c%010o ", SIGN(w) ? '-' : '+', MAG(w));
+	fprintf(LPT, "%c%010o ", SIGN(w) ? '-' : '+', MAG(w));
 }
 
 
 void xprin(Word w)
 {
-	fprintf(stderr, "%c%04o", SIGN(w) ? '-' : '+', MAG(w));
+	fprintf(LPT, "%c%04o", SIGN(w) ? '-' : '+', MAG(w));
 }
 
 void xprint(Word w)
 {
-    xprin(w); fprintf(stderr, " ");
+    xprin(w); fprintf(LPT, " ");
 }
 
 
@@ -798,9 +914,9 @@ void decode(Word C, Word F)
 
 void status(Word P)
 {
-	static char *sot = " X", *sci = "LEG";
+	static char *sot = " X", *sci = "LEG", *ssta = "N ";
 	Word w, INST, A, I, F, C, M, OP;
-	int i, j;
+	int i;
 	
 	P = MAG(P);
 	INST = mem[P];
@@ -813,15 +929,19 @@ void status(Word P)
 	decode(C, F);
 	
 	/*
- LOC FREQ INSTRUCTION OP                 OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME
-1234 1234 +1234567890 CODE +1234,1(1:1) +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
+         1         2         3         4         5         6         7         8         9         A         B         C
+123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890
+  LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME
+N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
-	if (0 == (InstCount & 31))
-		fprintf(stderr," LOC FREQ INSTRUCTION OP                OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME\n");
-	fprintf(stderr, "%04o %04d ", P, freq[P] % 9999);
-	wprint(INST);
+	if (0 == (InstCount % 31))
+		fprintf(stderr,"  LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME\n");
+	fprintf(stderr, "%c%04o %04d ", ssta[CS], P, freq[P] % 9999);
+    xprint(A); bprint(I); bprint(F); bprint(C);
 	fprintf(stderr, "%s ", mnemo);
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
+
+#if 0
     xprin(A);
     i = 0;
     if (I) fprintf(stderr, ",%d", I);
@@ -839,6 +959,8 @@ void status(Word P)
     i += j;
     if (i)
         fprintf(stderr, "%*s", i, " ");
+#endif
+
     if (RANGE(C,1,4) || RANGE(C,8,23) || RANGE(C,56,63)) {
         OP = GETV;
         wprint(OP);
@@ -858,18 +980,19 @@ void status(Word P)
 
 void undefined(Word C, Word F)
 {
-	fprintf(stderr,"%04d: C=%d, F=%d undefined operation\n", P, C, F);
+	fprintf(stderr,"-E-MIX: LOC=%04o C=%02o F=%02o OP.UNDEFINED\n", P, C, F);
+    RUN = OFF;
 }
 
 
 void chk_ix(int x, Toggle cy)
 {
 	if (OFF != cy) {
-		fprintf(stderr,"%04d: rI%d overflow\n", P, x);
-		RUN = 0;
+		fprintf(stderr,"-E-MIX: LOC=%04o RI%d OVERFLOW\n", P, x);
+		RUN = OFF;
 	} else if (~IX_MASK & MAG(reg[x])) {
-		fprintf(stderr,"%04d: rI%d undefined\n", P, x);
-		RUN = 0;
+		fprintf(stderr,"-E-MIX: LOC=%04o RI%d UNDEFINED\n", P, x);
+		RUN = OFF;
 	}
 }
 
@@ -950,7 +1073,7 @@ int step(void)
 		break;
 	case 3: /*MUL*/
 		sm_mul(&rA, &rX, rA, GETV);
-		Tyme += 9;
+		Tyme += 9; TIMER += 9;
 		break;
 	case 4: /*DIV*/
 		w = GETV;
@@ -959,7 +1082,7 @@ int step(void)
 			rA = UNDEF; rX = UNDEF;
 		} else
 			sm_div(&rA, &rX, rA, rX, w);
-		Tyme += 11;
+		Tyme += 11; TIMER += 11;
 		break;
 	case 5:
 		{	Word signA, signX;
@@ -974,7 +1097,7 @@ int step(void)
 				rA += signA; rX += signX;
 				break;
 			case 2: /*HLT*/
-				RUN = 0; break;
+				RUN = OFF; break;
 			default:
 				undefined(C, F);
 			};
@@ -1041,7 +1164,7 @@ int step(void)
 		if (Tyme < devs[F].evt) {
             rJ = P;
             if (OLDP == M)
-                Tyme = devs[F].evt;
+                lapse(devs[F].evt);
             else
 			    P = M;
 		}
@@ -1049,22 +1172,19 @@ int step(void)
 	case 35: /*IOC*/
 		if (dev_open(F))
 			return 0;
-		if (Tyme < devs[F].evt)
-            Tyme = devs[F].evt;
+        lapse(devs[F].evt);
 		dev_ioc(F, M);
 		break;
 	case 36: /*IN*/
 		if (dev_open(F))
 			return 0;
-		if (Tyme < devs[F].evt)
-			Tyme = devs[F].evt;
+		lapse(devs[F].evt);
 		dev_in(F, M);
 		break;
 	case 37: /*OUT*/
 		if (dev_open(F))
 			return 0;
-		if (Tyme < devs[F].evt)
-			Tyme = devs[F].evt;
+		lapse(devs[F].evt);
 		dev_out(F, M);
 		break;		
 	case 38: /*JRED*/
@@ -1152,7 +1272,7 @@ void run(Word p)
 {
 	P = p; RUN = ON;
 	while (RUN) {
-		if (Trace)
+		if (TRACE)
 			status(P);
 		step();
 	}
@@ -1162,10 +1282,16 @@ void init(void)
 {
 	int i;
 
+    LPT = stderr;
 	InstCount = 0;
-	Tyme = 0;
+	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
-	RUN = Trace = OFF;
+	RUN = OFF; TRACE = OFF;
+    CS = OFF;
+    TRANS = OFF;
+    for (i = 0; i < sizeof(TRANSNM); i++)
+        TRANSNM[i] = 0;
+
 	for (i = 0; i <= MAX_MEM; i++)
 		freq[i] = 0;
 
@@ -1203,7 +1329,11 @@ void finish(void)
 
 void usage(void)
 {
-	fprintf(stderr, "usage: mix [-t][-g dev]\n");
+	fprintf(stderr, "usage: mix [-g dev][-t][-x name]\n");
+    fprintf(stderr, "options:\n");
+    fprintf(stderr, "    -g unit    push GO button on unit\n");
+    fprintf(stderr, "    -t         enable tracing\n");
+    fprintf(stderr, "    -x name    print nonzero locations in TRANS fmt\n");
 	exit(1);
 }
 
@@ -1217,10 +1347,86 @@ void go(int u)
 }
 
 
+void stats(FILE *fd, int STRIDE, int dotrans)
+{
+    int prev_i, i, j, minj, maxj;
+    unsigned emit, prev_emit;
+    FILE *LPTSAV;
+
+    LPTSAV = LPT; LPT = fd;
+    if (!dotrans) {
+        nl();
+        fprintf(LPT, "CONTENTS OF MIX MEMORY (NONZERO LOCATIONS ONLY)\n");
+        nl();
+        fprintf(LPT, "LOC        ");
+        for (i = 0; i < STRIDE; i++)
+            fprintf(LPT, "%d           ", i);
+        fprintf(LPT, "%*sFREQUENCY  COUNTS\n", 1 + (6*STRIDE - 17) / 2, " ");
+    }
+
+    prev_emit = 0; prev_i = 0;
+    for (i = 0; i <= MAX_MEM; i += STRIDE) {
+        emit = 0; minj = STRIDE; maxj = 0;
+        for (j = 0; (i + j < 4000) && (j < STRIDE); j++) {
+            Word mag = mem[i + j];
+            if (mag) {
+                if (j < minj)
+                    minj = j;
+                maxj = j;
+            }
+            emit += mag;
+        }
+        if (!emit) {
+            prev_emit = 0; prev_i = 0;
+            continue;
+        }
+        if (!dotrans) {
+            if (prev_emit == emit)
+                continue;
+            if (prev_emit && ((prev_i + STRIDE) != i))
+                fprintf(LPT, "%04o..%04o   SAME AS ABOVE\n", prev_i, i - 1);
+        }
+        prev_i = i;
+        prev_emit = emit;
+        if (dotrans) {
+            char buf[11];
+            fprintf(LPT, "%-5s%d%04d", TRANSNM, maxj - minj + 1, i + minj);
+            for (j = minj; j < minj + STRIDE; j++) {
+                if (j > maxj)
+                    strcpy(buf, "0000000000");
+                else {
+                    Word w = mem[i + j];
+                    sprintf(buf, "%010d", MAG(w));
+                    if (SIGN(w))
+                        buf[9] = "~JKLMNOPQR"[MAG(w) % 10];
+                }
+                fprintf(LPT, "%s", buf);
+            }
+        } else {
+            fprintf(LPT, "%04o: ", i);
+            for (j = 0; j < STRIDE; j++)
+                wprint(mem[i + j]);
+            fprintf(stderr, "     ");
+            for (j = 0; j < STRIDE; j++)
+                fprintf(LPT, " %05d", freq[i + j]);
+        }
+        nl();
+    }
+    if (dotrans)
+        fprintf(LPT, "TRANS0%04d%*s", dotrans - 1, 70, " ");
+    else {
+        fprintf(LPT, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
+        fprintf(LPT, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
+    }
+    LPT = LPTSAV;
+}
+
+
 int main(int argc, char*argv[])
 {
 	int i, u;
-	char *arg;
+	char *arg, buf[16];
+    FILE *fout;
 
 	u = DEV_CR;
 	init();
@@ -1236,8 +1442,17 @@ int main(int argc, char*argv[])
 				usage();
 			break;
 		case 't':
-			Trace = ON;
+			TRACE = ON;
 			break;
+        case 'x':
+            if (i + 1 < argc) {
+                strncpy(TRANSNM, argv[++i], 5);
+                strtoupper(TRANSNM);
+            }
+            else
+                usage();
+            TRANS = ON;
+            break;
 		default:
 			usage();
 		}
@@ -1245,6 +1460,17 @@ int main(int argc, char*argv[])
 
     if (0 == dev_open(u))
 	    go(u);
+    stats(stderr, 4, 0);
+    if (TRANS) {
+        strcpy(buf, TRANSNM);
+        strcat(buf, ".tra");
+        strtolower(buf);
+        if ((fout = fopen(buf, TXT_APPEND))) {
+            stats(fout, 7, 1);
+            fclose(fout);
+        } else
+            fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", buf);
+    }
     finish();
 
 	return 0;
