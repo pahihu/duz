@@ -56,14 +56,12 @@
 #if defined(NDEBUG)
 # define ASSERT(x)
 #else
-# define ASSERT(x)  __assert(__LINE__,__FUNCTION__,x,""#x)
-void __assert(int lno, const char *fun, int cond, const char *expr)
+# define ASSERT(x)  __assert(__LINE__,__FUNCTION__,""#x)
+void __assert(int lno, const char *fun, const char *x)
 {
-    if (!cond) {
-        fprintf(stderr, "%s:%d: %s failed\n", fun, lno, expr);
-        fflush(stderr);
-        exit(1);
-    }
+    fprintf(stderr, "%s:%d: %s failed\n", fun, lno, x);
+    fflush(stderr);
+    exit(1);
 }
 #endif
 
@@ -108,7 +106,6 @@ unsigned int Tyme, IdleTyme, InstCount;
 unsigned short freq[MAX_MEM+1];
 MachineState STATE, STATESAV;
 Toggle CY;
-Toggle TRACEIO;
 
 #define rA	 reg[0]
 #define rI1	 reg[1]
@@ -315,31 +312,18 @@ int Running(void)
     return S_HALT != STATE;
 }
 
-unsigned WaitEvt;
-
 void Awake(void)
 {
-    ASSERT(0 < WaitEvt && WaitEvt <= Tyme);
     ASSERT(S_NORMAL == STATESAV || S_CONTROL == STATESAV);
-
-    if (TRACEIO)
-        fprintf(stderr, "-I-MIX: LOC=%04o AWAKE AT %07u\n", P, Tyme);
 
     STATE = STATESAV;
     STATESAV = S_HALT;
-    WaitEvt = 0;
 }
 
-void WaitFor(unsigned evt)
+void Wait(void)
 {
-    ASSERT(evt > Tyme);
-    ASSERT(0 == WaitEvt);
     ASSERT(S_HALT == STATESAV);
 
-    if (TRACEIO)
-        fprintf(stderr, "-I-MIX: LOC=%04o WAIT UNTIL %07u\n", P, evt);
-
-    WaitEvt = evt;
     STATESAV = STATE;
     STATE = S_WAIT;
 }
@@ -674,10 +658,6 @@ int devStuck(int u)
 
 int devBusy(int u)
 {
-    if (Waiting()) {
-        if (Tyme >= WaitEvt)
-            Awake();
-    }
     return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt);
 }
 
@@ -807,8 +787,6 @@ int devOpen(int u)
 	devs[u].pos = 0;
 	devs[u].max_pos = 0;
 	fd = fopen(devname, IOchar[x].fam);
-    if (TRACEIO)
-        fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o INIT %s\n", P, u, devname);
 	if (fd) {
 		if (u <= DEV_MT|| DEV_CR == u) {
 			fseek(fd, 0, SEEK_END);
@@ -896,21 +874,17 @@ void devIOC(int u, int M)
 }
 
 
-void devINP(int u, Word M)
+void devIN(int u, Word M)
 {
 	int x;
 	char *errmsg = NULL;
     Byte *cvt = NULL;
 	
 	x = devIdx(u);
-    if (CheckAddr(M, "IN BUFFER")
-        || CheckAddr(M + IOchar[x].blk_size, "IN BUFFER END"))
-        return;
+	CheckAddr(M, "IN BUFFER");
+	CheckAddr(M + IOchar[x].blk_size, "IN BUFFER END");
 	
 	M = MAG(M);
-
-    if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IN\n", P, u, M);
 
 	devs[u].evt = Tyme;
 	if (u <= DEV_MT) {
@@ -943,9 +917,8 @@ void devOUT(Word u,Word M)
     char *cvt = NULL;
 	
 	x = devIdx(u);
-	if (CheckAddr(M, "OUT BUFFER")
-        || CheckAddr(M + IOchar[x].blk_size, "OUT BUFFER END"))
-        return;
+	CheckAddr(M, "OUT BUFFER");
+	CheckAddr(M + IOchar[x].blk_size, "OUT BUFFER END");
 	
 	M = MAG(M);
 
@@ -1220,13 +1193,14 @@ void ToChar(Word *pa, Word *px, Word a)
 
 int Step(void)
 {
-	Word IR, C, F, I, A, M;
+	Word OLDP, IR, C, F, I, A, M;
 	Word w;
 	int cond, x;
 
+    OLDP = P;
     if (CheckMemRead(P))
         return 1;
-	IR = MemRead(P);
+	IR = MemRead(P); freq[P++]++;
 	w = IR;
 	C = BYTE(w); w >>= 6;
 	F = BYTE(w); w >>= 6;
@@ -1351,38 +1325,37 @@ int Step(void)
 	case 34: /*JBUS*/
         devOpen(F);
 		if (devBusy(F)) {
-            rJ = P + 1;
-			P = M;
-            return 0;
+            rJ = P;
+            if (OLDP == M) {
+                Lapse(devs[F].evt);
+            }
+            else
+			    P = M;
 		}
 		break;
 	case 35: /*IOC*/
-	case 36: /*IN*/
-    case 37: /*OUT*/
 		if (devOpen(F))
 			return 0;
-        if (devBusy(F)) {
-            IdleTyme++;
-            if (!Waiting()) {
-                WaitFor(devs[F].evt);
-                return 0;
-            }
-            return 0;
-        }
-		// Lapse(devs[F].evt);
-        ASSERT(!Waiting());
-        switch (C) {
-        case 35: devIOC(F, M); break;
-		case 36: devINP(F, M); break;
-		case 37: devOUT(F, M); break;
-        }
+        Lapse(devs[F].evt);
+		devIOC(F, M);
 		break;
+	case 36: /*IN*/
+		if (devOpen(F))
+			return 0;
+		Lapse(devs[F].evt);
+		devIN(F, M);
+		break;
+	case 37: /*OUT*/
+		if (devOpen(F))
+			return 0;
+		Lapse(devs[F].evt);
+		devOUT(F, M);
+		break;		
 	case 38: /*JRED*/
         devOpen(F);
 		if (!devBusy(F)) {
-			rJ = P + 1;
+			rJ = P;
 			P = M;
-            return 0;
 		}
 		break;
 	case 39:
@@ -1403,9 +1376,8 @@ int Step(void)
 		}
 		if (cond) {
 			if (1 != F)
-				rJ = P + 1;
+				rJ = P;
 			P = M;
-            return 0;
 		}
 		break;
 	case 40: case 41: case 42: case 43: case 44: case 45: case 46: case 47:
@@ -1421,9 +1393,8 @@ int Step(void)
 			return UndefinedOp(C, F);
 		}
 		if (cond) {
-			rJ = P + 1;
+			rJ = P;
 			P = M;
-            return 0;
 		}
 		break;
 	case 48: case 49: case 50: case 51: case 52: case 53: case 54: case 55:
@@ -1460,28 +1431,18 @@ int Step(void)
 		else CI = GREATER;
 		break;
 	}
-    P++;
+    InstCount++;
 	return 0;
 }
 
 
 void Run(Word p)
 {
-    Word OLDP;
-
-	P = p; OLDP = p + 1; STATE = S_NORMAL;
+	P = p; STATE = S_NORMAL;
 	while (Running()) {
-        if (!Waiting()) {
-            if (TRACE && OLDP != P)
-                Status(P);
-        }
-        OLDP = P;
-        Step();
-        if (Waiting()) {
-            P = OLDP;
-        } else {
-            freq[OLDP]++; InstCount++;
-        }
+		if (!Waiting() && TRACE)
+			Status(P);
+		Step();
 	}
 }
 
@@ -1494,7 +1455,7 @@ void Init(void)
 	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
 	STATE = S_HALT; Halt();
-    TRACE = OFF; TRACEIO = OFF; TRANS = OFF;
+    TRACE = OFF; TRANS = OFF;
     for (i = 0; i < sizeof(TRANSNM); i++)
         TRANSNM[i] = 0;
 
@@ -1516,7 +1477,6 @@ void Init(void)
         events[i].next = 0;
     }
     EventH = 0;
-    WaitEvt = 0;
 
     devs[DEV_TT].fd = stdin;
     devs[DEV_TT].fdout = stdout;
@@ -1553,7 +1513,7 @@ void Go(int u)
 {
 	if (u < 0 || u >= MAX_DEVS || DEV_CP == u || DEV_LP == u || DEV_TT == u)
 		Usage();
-	devINP(u, 0);
+	devIN(u, 0);
 	Run(0);
 }
 
