@@ -1256,7 +1256,6 @@ Word START;
 char LINE[80 + 1], *PLN;
 char *LOCATION, *OP, *ADDRESS;
 enum {TOK_ERR, TOK_LOC, TOK_NUM, TOK_SYM} T;
-char S[80 + 1];
 Word N;
 #define NSYMS 1500
 struct {
@@ -1304,9 +1303,11 @@ int GetSym(void)
     isnum = 1;
     while (CH && ((d = IsDigit(CH)) || IsAlpha(CH))) {
         isnum = isnum && d;
-        S[n++] = CH; NEXT();
+        if (n < 10)
+            LOCATION[n++] = CH;
+        NEXT();
     }
-    S[n] = 0;
+    LOCATION[n] = 0;
     if (n > 9) {
         fprintf(stderr, "LINE=%d SYMBOL TOO LONG\n", LNO);
         return Error();
@@ -1315,7 +1316,7 @@ int GetSym(void)
     if (isnum) {
         N = 0;
         for (i = 0; i < n; i++)
-            N = 10 * N + S[i] - '0';
+            N = 10 * N + LOCATION[i] - '0';
         T = TOK_NUM;
     }
     return 0;
@@ -1383,13 +1384,11 @@ Word AtomicExpr(void)
         SX = found = FindSym();
         if (found--) {
             if (OFF == syms[found].D) {
-                // fprintf(stderr, "LINE=%d %s FUTURE.REF\n", LNO, S);
-                E = ON;
+                E = ON; /* FUTURE.REF */
             } else
                 ret = syms[found].N;
         } else {
-            fprintf(stderr, "LINE=%d %s UNDEFINED\n", LNO, S);
-            return Error();
+            E = ON; /* UNDEFINED */
         }
     }
     return ret;
@@ -1416,11 +1415,15 @@ Word Expr(void)
         NEXT(); v = AtomicExpr();
     } else if ('-' == CH) {
         NEXT(); v = smNEG(AtomicExpr());
-    } else
+    } else {
+        /* future reference? */
         v = AtomicExpr();
+        if (E) return 0;
+    }
+    if (E) return Error();
     while (IsBinOp()) {
         w = AtomicExpr();
-        if (E) return 0;
+        if (E) return Error();
         switch (B) {
         case '+': v = smADD(v, w); break;
         case '-': v = smSUB(v, w); break;
@@ -1447,10 +1450,11 @@ Word Apart(void)
         if (E && TOK_SYM == T) {
             E = OFF;
             if (SX) {
-                /* future reference */
+                /* already defined future.ref */
                 v = syms[SX-1].N;
                 syms[SX-1].N = P;
             } else {
+                /* future.ref */
                 v = 0;
                 DefineSym(P, OFF);
             }
@@ -1471,8 +1475,8 @@ Word Ipart(void)
     Word v = 0;
 
     if (E) return 0;
-    if (CH) {
-        ENSURE(',');
+    if (',' == CH) {
+        NEXT();
         v = Expr();
     }
     return v;
@@ -1483,8 +1487,8 @@ Word Fpart(Word F)
     Word v = F;
 
     if (E) return 0;
-    if (CH) {
-        ENSURE('(');
+    if ('(' == CH) {
+        NEXT();
         v = Expr();
         ENSURE(')');
     }
@@ -1494,9 +1498,13 @@ Word Fpart(Word F)
 Word Wvalue(void)
 {
     Word v = 0, w = 0;
-    int f;
+    int f, found;
+    char *LBEG = NULL, *LEND = NULL;
 
     if (E) return 0;
+    if (CH && '=' == CH) {
+        LBEG = PLN;
+    }
     w = Expr();
     f = Fpart(05);
     if (E) return 0;
@@ -1505,6 +1513,21 @@ Word Wvalue(void)
         NEXT();
         w = Expr(); f = Fpart(05);
         v = WriteField(v, w, f);
+    }
+    if (LBEG) {
+        /* =123= */
+        LEND = PLN;
+        ENSURE('=');
+        if (LEND - LBEG <= 10) {
+            strncpy(LOCATION, LBEG, LEND - LBEG);
+            found = FindSym();
+            if (found--) {
+                v = syms[found].N;
+                syms[found].N = P;
+            } else {
+                DefineSym(P, OFF);
+            }
+        }
     }
     return v;
 }
