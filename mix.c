@@ -13,12 +13,13 @@
  *
  *  TODO
  *  ====
- *  - assembler
+ *  - assembler: 197. local symbols, free fmt, 201. literal const
  *  - simplify disassembler mnemonics
  *  
  *
  *  History:
  *  ========
+ *  250620AP    more runtime checks
  *  250619AP    changed CS/RUN to STATE
  *              added Schedule(), wait on busy device
  *				I/O at half time
@@ -86,6 +87,9 @@ char *strtoupper(char *s)
     return s;
 }
 
+#define RANGE(x,lo,hi)  (lo <= (x) && (x) <= hi)
+
+
 typedef unsigned int Word;
 typedef unsigned char Byte;
 typedef enum {OFF, ON} Toggle;
@@ -137,6 +141,7 @@ Toggle TRACEIO;
 #define	BYTE(x)		((x) & 077)
 #define BYTES		5
 #define TRACK(x)    BYTE((x) >> 6)
+#define PLUS(x)     (SIGN(x) ? '-' : '+')
 
 Word i2w(int i)
 {	int sign;
@@ -355,7 +360,7 @@ int Waiting(void)
 int CheckAddr(Word a, char *msg)
 {
 	if (SIGN(a) || MAG(a) > MAX_MEM) {
-		fprintf(stderr, "-E-MIX: LOC=%04o M=%04o INV.MEMORY ADDRESS %s\n", P, w2i(a), msg);
+		fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o INV.MEMORY ADDRESS %s\n", P, PLUS(a), MAG(a), msg);
         return Halt();
 	}
     return 0;
@@ -371,31 +376,34 @@ Word MemRead(Word a)
 
 #define CheckMemWrite(a)    CheckAddr(a, "MEMORY WRITE")
 
-void MemWrite(Word a,int f,Word w)
+Word WriteField(Word v, int f, Word w)
 {
 	int sign, l, r, shmt;
 	unsigned mask;
-	Word v;
+	Word vv;
 	
-	Tyme++; TIMER++;
-	if (FULL == f) {
-		mem[MAG(a)] = w;
-		return;
-	}
+	if (FULL == f)
+		return w;
 	l = L(f); r = R(f);
     sign = 0;
 	if (0 == l)
         sign = ++l;
 	mask = SM_MASK(6 * (r - l + 1));
 	shmt = 6 * (5 - r);
-	v = mask & w;
-	v <<= shmt; mask <<= shmt;
+	vv = mask & w;
+	vv <<= shmt; mask <<= shmt;
 	if (sign) {
 		mask += SM_SIGN;
-		v += SIGN(w);
+		vv += SIGN(w);
 	}
-	w = mem[MAG(a)];
-	mem[MAG(a)] = v + (mask & w);
+	return vv + (mask & v);
+}
+
+void MemWrite(Word a,int f,Word w)
+{
+	Tyme++; TIMER++;
+    a = MAG(a);
+    mem[a] = WriteField(mem[a], f, w);
 }
 
 int CheckMemMove(Word src, Word dst, int n)
@@ -1042,19 +1050,6 @@ ErrOut:
 	devError(u);
 }
 
-
-void Lapse(unsigned t)
-{
-    unsigned dt;
-
-    if (Tyme < t) {
-        dt = t - Tyme;
-        IdleTyme += dt; TIMER += dt;
-        Tyme = t;
-    }
-}
-
-
 void nl(void)
 {
     fprintf(LPT, "\n");
@@ -1068,13 +1063,13 @@ void bprint(Byte w)
 
 void wprint(Word w)
 {
-	fprintf(LPT, "%c%010o ", SIGN(w) ? '-' : '+', MAG(w));
+	fprintf(LPT, "%c%010o ", PLUS(w), MAG(w));
 }
 
 
 void xprin(Word w)
 {
-	fprintf(LPT, "%c%04o", SIGN(w) ? '-' : '+', MAG(w));
+	fprintf(LPT, "%c%04o", PLUS(w), MAG(w));
 }
 
 void xprint(Word w)
@@ -1086,22 +1081,26 @@ void xprint(Word w)
 static struct {
 	char *nm;
 	int  c0de;
-} mnemosx[] = {
+} opcodes[] = {
 	{"NOP ", MM(00,05)},
 	{"ADD ", MM(01,05)},
 	{"SUB ", MM(02,05)},
 	{"MUL ", MM(03,05)},
 	{"DIV ", MM(04,05)},
+
 	{"NUM ", MM(05,00)},
 	{"CHAR", MM(05,01)},
 	{"HLT ", MM(05,02)},
+
 	{"SLA ", MM(06,00)},
 	{"SRA ", MM(06,01)},
 	{"SLAX", MM(06,02)},
 	{"SRAX", MM(06,03)},
 	{"SLC ", MM(06,04)},
 	{"SRC ", MM(06,05)},
+
 	{"MOVE", MM(07,00)},
+
 	{"LDA ", MM(010,05)},
 	{"LD1 ", MM(011,05)},
 	{"LD2 ", MM(012,05)},
@@ -1110,6 +1109,7 @@ static struct {
 	{"LD5 ", MM(015,05)},
 	{"LD6 ", MM(016,05)},
 	{"LDX ", MM(017,05)},
+
 	{"LDAN", MM(020,05)},
 	{"LD1N", MM(021,05)},
 	{"LD2N", MM(022,05)},
@@ -1118,6 +1118,7 @@ static struct {
 	{"LD5N", MM(025,05)},
 	{"LD6N", MM(026,05)},
 	{"LDXN", MM(027,05)},
+
 	{"STA ", MM(030,05)},
 	{"ST1 ", MM(031,05)},
 	{"ST2 ", MM(032,05)},
@@ -1126,6 +1127,7 @@ static struct {
 	{"ST5 ", MM(035,05)},
 	{"ST6 ", MM(036,05)},
 	{"STX ", MM(037,05)},
+
 	{"STJ ", MM(040,02)},
 	{"STZ ", MM(041,05)},
 	{"JBUS", MM(042,00)},
@@ -1133,6 +1135,7 @@ static struct {
 	{"IN  ", MM(044,00)},
 	{"OUT ", MM(045,00)},
 	{"JRED", MM(046,00)},
+
 	{"JMP ", MM(047,00)},
 	{"JSJ ", MM(047,01)},
 	{"JOV ", MM(047,02)},
@@ -1144,108 +1147,424 @@ static struct {
 	{"JNE ", MM(047,010)},
 	{"JLE ", MM(047,011)},
 	
-	{"JAN AI", MM(050,00)},
-	{"J1N AI", MM(051,00)},
-	{"J2N AI", MM(052,00)},
-	{"J3N AI", MM(053,00)},
-	{"J4N AI", MM(054,00)},
-	{"J5N AI", MM(055,00)},
-	{"J6N AI", MM(056,00)},
-	{"JXN AI", MM(057,00)},
+	{"JAN ", MM(050,00)},
+	{"J1N ", MM(051,00)},
+	{"J2N ", MM(052,00)},
+	{"J3N ", MM(053,00)},
+	{"J4N ", MM(054,00)},
+	{"J5N ", MM(055,00)},
+	{"J6N ", MM(056,00)},
+	{"JXN ", MM(057,00)},
 	
-	{"JAZ AI", MM(050,01)},
-	{"J1Z AI", MM(051,01)},
-	{"J2Z AI", MM(052,01)},
-	{"J3Z AI", MM(053,01)},
-	{"J4Z AI", MM(054,01)},
-	{"J5Z AI", MM(055,01)},
-	{"J6Z AI", MM(056,01)},
-	{"JXZ AI", MM(057,01)},
+	{"JAZ ", MM(050,01)},
+	{"J1Z ", MM(051,01)},
+	{"J2Z ", MM(052,01)},
+	{"J3Z ", MM(053,01)},
+	{"J4Z ", MM(054,01)},
+	{"J5Z ", MM(055,01)},
+	{"J6Z ", MM(056,01)},
+	{"JXZ ", MM(057,01)},
 
-	{"JAP AI", MM(050,02)},
-	{"J1P AI", MM(051,02)},
-	{"J2P AI", MM(052,02)},
-	{"J3P AI", MM(053,02)},
-	{"J4P AI", MM(054,02)},
-	{"J5P AI", MM(055,02)},
-	{"J6P AI", MM(056,02)},
-	{"JXP AI", MM(057,02)},
+	{"JAP ", MM(050,02)},
+	{"J1P ", MM(051,02)},
+	{"J2P ", MM(052,02)},
+	{"J3P ", MM(053,02)},
+	{"J4P ", MM(054,02)},
+	{"J5P ", MM(055,02)},
+	{"J6P ", MM(056,02)},
+	{"JXP ", MM(057,02)},
 
-	{"JANNAI", MM(050,03)},
-	{"J1NNAI", MM(051,03)},
-	{"J2NNAI", MM(052,03)},
-	{"J3NNAI", MM(053,03)},
-	{"J4NNAI", MM(054,03)},
-	{"J5NNAI", MM(055,03)},
-	{"J6NNAI", MM(056,03)},
-	{"JXNNAI", MM(057,03)},
+	{"JANN", MM(050,03)},
+	{"J1NN", MM(051,03)},
+	{"J2NN", MM(052,03)},
+	{"J3NN", MM(053,03)},
+	{"J4NN", MM(054,03)},
+	{"J5NN", MM(055,03)},
+	{"J6NN", MM(056,03)},
+	{"JXNN", MM(057,03)},
 	
-	{"JANZAI", MM(050,04)},
-	{"J1NZAI", MM(051,04)},
-	{"J2NZAI", MM(052,04)},
-	{"J3NZAI", MM(053,04)},
-	{"J4NZAI", MM(054,04)},
-	{"J5NZAI", MM(055,04)},
-	{"J6NZAI", MM(056,04)},
-	{"JXNZAI", MM(057,04)},
+	{"JANZ", MM(050,04)},
+	{"J1NZ", MM(051,04)},
+	{"J2NZ", MM(052,04)},
+	{"J3NZ", MM(053,04)},
+	{"J4NZ", MM(054,04)},
+	{"J5NZ", MM(055,04)},
+	{"J6NZ", MM(056,04)},
+	{"JXNZ", MM(057,04)},
 
-	{"JANPAI", MM(050,05)},
-	{"J1NPAI", MM(051,05)},
-	{"J2NPAI", MM(052,05)},
-	{"J3NPAI", MM(053,05)},
-	{"J4NPAI", MM(054,05)},
-	{"J5NPAI", MM(055,05)},
-	{"J6NPAI", MM(056,05)},
-	{"JXNPAI", MM(057,05)},
+	{"JANP", MM(050,05)},
+	{"J1NP", MM(051,05)},
+	{"J2NP", MM(052,05)},
+	{"J3NP", MM(053,05)},
+	{"J4NP", MM(054,05)},
+	{"J5NP", MM(055,05)},
+	{"J6NP", MM(056,05)},
+	{"JXNP", MM(057,05)},
 
-	{"INCAAI", MM(060,00)},
-	{"INC1AI", MM(061,00)},
-	{"INC2AI", MM(062,00)},
-	{"INC3AI", MM(063,00)},
-	{"INC4AI", MM(064,00)},
-	{"INC5AI", MM(065,00)},
-	{"INC6AI", MM(066,00)},
-	{"INCXAI", MM(067,00)},
+	{"INCA", MM(060,00)},
+	{"INC1", MM(061,00)},
+	{"INC2", MM(062,00)},
+	{"INC3", MM(063,00)},
+	{"INC4", MM(064,00)},
+	{"INC5", MM(065,00)},
+	{"INC6", MM(066,00)},
+	{"INCX", MM(067,00)},
 
-	{"DECAAI", MM(060,01)},
-	{"DEC1AI", MM(061,01)},
-	{"DEC2AI", MM(062,01)},
-	{"DEC3AI", MM(063,01)},
-	{"DEC4AI", MM(064,01)},
-	{"DEC5AI", MM(065,01)},
-	{"DEC6AI", MM(066,01)},
-	{"DECXAI", MM(067,01)},
+	{"DECA", MM(060,01)},
+	{"DEC1", MM(061,01)},
+	{"DEC2", MM(062,01)},
+	{"DEC3", MM(063,01)},
+	{"DEC4", MM(064,01)},
+	{"DEC5", MM(065,01)},
+	{"DEC6", MM(066,01)},
+	{"DECX", MM(067,01)},
 	
-	{"ENTAAI", MM(060,02)},
-	{"ENT1AI", MM(061,02)},
-	{"ENT2AI", MM(062,02)},
-	{"ENT3AI", MM(063,02)},
-	{"ENT4AI", MM(064,02)},
-	{"ENT5AI", MM(065,02)},
-	{"ENT6AI", MM(066,02)},
-	{"ENTXAI", MM(067,02)},
+	{"ENTA", MM(060,02)},
+	{"ENT1", MM(061,02)},
+	{"ENT2", MM(062,02)},
+	{"ENT3", MM(063,02)},
+	{"ENT4", MM(064,02)},
+	{"ENT5", MM(065,02)},
+	{"ENT6", MM(066,02)},
+	{"ENTX", MM(067,02)},
 
-	{"ENNAAI", MM(060,03)},
-	{"ENN1AI", MM(061,03)},
-	{"ENN2AI", MM(062,03)},
-	{"ENN3AI", MM(063,03)},
-	{"ENN4AI", MM(064,03)},
-	{"ENN5AI", MM(065,03)},
-	{"ENN6AI", MM(066,03)},
-	{"ENNXAI", MM(067,03)},
+	{"ENNA", MM(060,03)},
+	{"ENN1", MM(061,03)},
+	{"ENN2", MM(062,03)},
+	{"ENN3", MM(063,03)},
+	{"ENN4", MM(064,03)},
+	{"ENN5", MM(065,03)},
+	{"ENN6", MM(066,03)},
+	{"ENNX", MM(067,03)},
 
-	{"CMPAAIF", MM(070,05)},
-	{"CMP1AIF", MM(071,05)},
-	{"CMP1AIF", MM(072,05)},
-	{"CMP1AIF", MM(073,05)},
-	{"CMP1AIF", MM(074,05)},
-	{"CMP1AIF", MM(075,05)},
-	{"CMP1AIF", MM(076,05)},
-	{"CMPXAIF", MM(077,05)},
+	{"CMPA", MM(070,05)},
+	{"CMP1", MM(071,05)},
+	{"CMP1", MM(072,05)},
+	{"CMP1", MM(073,05)},
+	{"CMP1", MM(074,05)},
+	{"CMP1", MM(075,05)},
+	{"CMP1", MM(076,05)},
+	{"CMPX", MM(077,05)},
+    {  NULL, MM(000,00)},
 };
 
 
 char mnemo[5];
+Toggle E;
+int LNO, CH, B, SX;
+Word START;
+char LINE[80 + 1], *PLN;
+char *LOCATION, *OP, *ADDRESS;
+enum {TOK_ERR, TOK_LOC, TOK_NUM, TOK_SYM} T;
+char S[80 + 1];
+Word N;
+#define NSYMS 1500
+struct {
+    char S[10+1];
+    Word N;
+    Toggle D;
+} syms[NSYMS];
+int nsyms;
+
+
+/* ==================== A S S E M B L E R =================== */
+
+void NEXT(void)
+{
+    ASSERT( CH );
+    CH = *PLN++;
+}
+
+int IsDigit(int ch)
+{
+    return RANGE(ch,'0','9');
+}
+
+int IsAlpha(int ch)
+{
+    return RANGE(ch,'A','B') || ('~' == ch);
+}
+
+int Error(void)
+{
+    E = ON; T = TOK_ERR;
+    return 0;
+}
+
+int GetSym(void)
+{
+    int i, n, d, isnum;
+
+    if (CH && '*' == CH) {
+        NEXT();
+        T = TOK_LOC;
+        return 0;
+    }
+    n = 0;
+    isnum = 1;
+    while (CH && ((d = IsDigit(CH)) || IsAlpha(CH))) {
+        isnum = isnum && d;
+        S[n++] = CH; NEXT();
+    }
+    S[n] = 0;
+    if (n > 9) {
+        fprintf(stderr, "LINE=%d SYMBOL TOO LONG\n", LNO);
+        return Error();
+    }
+    T = TOK_SYM;
+    if (isnum) {
+        N = 0;
+        for (i = 0; i < n; i++)
+            N = 10 * N + S[i] - '0';
+        T = TOK_NUM;
+    }
+    return 0;
+}
+
+int FindOp(void)
+{
+    int i;
+
+    for (i = 0; opcodes[i].nm; i++) {
+        if (!strcmp(opcodes[i].nm, OP))
+            return i+1;
+    }
+    return 0;
+}
+
+int FindSym(void)
+{
+    int i, found;
+
+    found = 0;
+    for (i = 0; i < nsyms; i++) {
+        if (!strcmp(syms[i].S, LOCATION)) {
+            found = i + 1;
+            break;
+        }
+    }
+    return found;
+}
+
+int DefineSym(Word w, Toggle defd)
+{
+    int found;
+
+    found = FindSym();
+    if (found) {
+        fprintf(stderr, "LINE=%d DUPLICATE SYMBOL %s\n", LNO, LOCATION);
+        return Error();
+    }
+    strcpy(syms[nsyms].S, LOCATION);
+    syms[nsyms].N = w;
+    syms[nsyms].D = defd;
+    nsyms++;
+    return 0;
+}
+
+Word AtomicExpr(void)
+{
+    int found;
+    Word ret = 0;
+
+    if (E) return 0;
+    GetSym();
+    switch (T) {
+    case TOK_ERR:
+        ret = 0;
+        break;
+    case TOK_LOC:
+        ret = P;
+        break;
+    case TOK_NUM:
+        ret = N;
+        break;
+    case TOK_SYM:
+        SX = found = FindSym();
+        if (found--) {
+            if (OFF == syms[found].D) {
+                // fprintf(stderr, "LINE=%d %s FUTURE.REF\n", LNO, S);
+                E = ON;
+            } else
+                ret = syms[found].N;
+        } else {
+            fprintf(stderr, "LINE=%d %s UNDEFINED\n", LNO, S);
+            return Error();
+        }
+    }
+    return ret;
+}
+
+int IsBinOp(void)
+{
+    if (E) return 0;
+    if (!CH || IsAlpha(CH) || IsDigit(CH))
+        return 0;
+    B = CH; NEXT();
+    if ((B == '/') && '/' == CH) {
+        B = 'D'; NEXT();
+    }
+    return 1;
+}
+
+Word Expr(void)
+{
+    Word v = 0, w = 0;
+
+    if (E) return 0;
+    if ('+' == CH) {
+        NEXT(); v = AtomicExpr();
+    } else if ('-' == CH) {
+        NEXT(); v = smNEG(AtomicExpr());
+    } else
+        v = AtomicExpr();
+    while (IsBinOp()) {
+        w = AtomicExpr();
+        if (E) return 0;
+        switch (B) {
+        case '+': v = smADD(v, w); break;
+        case '-': v = smSUB(v, w); break;
+        case '*': smMPY(&w, &v, w, v); break;
+        case '/': smDIV(&v, NULL, 0, v, w); break;
+        case 'D': smDIV(&v, NULL, v, 0, w); break; /*//*/
+        case ':': v = i2w(8 * w2i(v) + w2i(w)); break;
+        default:
+            fprintf(stderr, "LINE=%d %c INVALID BIN.OP\n", LNO, B);
+            E = ON; T = TOK_ERR;
+            break;
+        }
+    }
+    return v;
+}
+
+Word Apart(void)
+{
+    Word v = 0;
+
+    if (E) return 0;
+    if (CH) {
+        v = Expr();
+        if (E && TOK_SYM == T) {
+            E = OFF;
+            if (SX) {
+                /* future reference */
+                v = syms[SX-1].N;
+                syms[SX-1].N = P;
+            } else {
+                v = 0;
+                DefineSym(P, OFF);
+            }
+        }
+    }
+    return v;
+}
+
+#define ENSURE(ch)  \
+    if (ch != CH) { \
+        fprintf(stderr, "LINE=%d %c EXPECTED\n", LNO, CH); \
+        return Error(); \
+    } \
+    NEXT();
+
+Word Ipart(void)
+{
+    Word v = 0;
+
+    if (E) return 0;
+    if (CH) {
+        ENSURE(',');
+        v = Expr();
+    }
+    return v;
+}
+
+Word Fpart(Word F)
+{
+    Word v = F;
+
+    if (E) return 0;
+    if (CH) {
+        ENSURE('(');
+        v = Expr();
+        ENSURE(')');
+    }
+    return v;
+}
+
+Word Wvalue(void)
+{
+    Word v = 0, w = 0;
+    int f;
+
+    if (E) return 0;
+    w = Expr();
+    f = Fpart(05);
+    if (E) return 0;
+    v = WriteField(v, w, f);
+    while (!E && ',' == CH) {
+        NEXT();
+        w = Expr(); f = Fpart(05);
+        v = WriteField(v, w, f);
+    }
+    return v;
+}
+
+int Assemble(char *line)
+{
+    Word w, A, I, F, C;
+    int i, found;
+
+    strcpy(LINE, line);
+    LINE[10] = 0;
+    LINE[15] = 0;
+    LOCATION = LINE;
+    OP = LINE+11;
+    ADDRESS = LINE+16;
+
+    if ('*' == LOCATION[0])
+        return 0;
+
+    PLN = ADDRESS; CH = 1; NEXT();
+    if (!strcmp(OP, "EQU ")) {
+        w = Wvalue();
+        if (' ' != LOCATION[0])
+            DefineSym(w, ON);
+    } else {
+        if (' ' != LOCATION[0])
+            DefineSym(P, ON);
+        found = FindOp();
+        if (found--) {
+            C = opcodes[found].c0de; 
+            F = BYTE(C >> 6);
+            C = BYTE(C);
+
+            A = Apart();
+            I = Ipart();
+            F = Fpart(F);
+            mem[P++] = SIGN(A) + (MAG(A) << 18) + (BYTE(I) << 12) + (BYTE(F) << 6) + C;
+        } else if (!strcmp(OP, "ORIG"))
+            P = Wvalue();
+        else if (!strcmp(OP, "CON "))
+            mem[P++] = Wvalue();
+        else if (!strcmp(OP, "ALF ")) {
+            Byte buf[5];
+            for (i = 0; i < 5; i++) {
+                buf[i] = cr_a2m[(int) ADDRESS[i]];
+            }
+            mem[P++] = Pack(buf, 0);
+        }
+        else if (!strcmp(OP, "END "))
+            START = field(Wvalue(), FIELD(4,5));
+        else {
+            fprintf(stderr, "LINE=%d %s INVALID OP\n", LNO, OP);
+            Error();
+        }
+    }
+    return ON == E;
+}
+
+
+/* =============== C O N T R O L  S E C T I O N ============= */
 
 void decode(Word C, Word F)
 {
@@ -1268,15 +1587,14 @@ void decode(Word C, Word F)
 	char *s;
 	
 	mnemo[0] = '\0';
+	mnemo[4] = '\0';
 	s = mnemos[C / 8];
 	if (' ' == *s) {
 		s++;
 		if (4 == strlen(s))
 			strcpy(mnemo, s);
-		else {
+		else
 			strncpy(mnemo, s + 4 * (C & 07), 4);
-			mnemo[4] = '\0';
-		}
 		if (*mnemo < 'A') {
 			s = mnemos[(Byte) *mnemo];
 			mnemo[0] = '\0';
@@ -1284,30 +1602,32 @@ void decode(Word C, Word F)
 	}
 	if (0 == mnemo[0]) {
 		nf = *s++;
-		if (F < nf) {
+		if (F < nf)
 			strncpy(mnemo, s + 4 * F, 4);
-			mnemo[4] = '\0';
-		} else {
+		else
 			sprintf(mnemo, "U%03o", C);
-		}
 	}
 	s = strchr(mnemo, 'r');
 	if (s)
 		*s = regnames[C & 07];
 }
 
+int FieldError(Byte F)
+{
+    fprintf(stderr, "-E-MIX: LOC=%04o F=%02o INVALID FIELD\n", P, F);
+    return Halt();
+}
 
 int GetV(Word M, Byte F, Word *ret)
 {
+    if (R(F) > 5 || L(F) > R(F))
+        return FieldError(F);
     if (CheckMemRead(M)) {
         return 1;
     }
     *ret = field(MemRead(M),F);
     return 0;
 }
-
-#define GETV    field(MemRead(M),F)
-#define RANGE(x,lo,hi)  (lo <= (x) && (x) <= hi)
 
 void Status(Word P)
 {
@@ -1375,12 +1695,6 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 
 
 #define UNDEF	rand()
-
-int UndefinedOp(Word C, Word F)
-{
-	fprintf(stderr,"-E-MIX: LOC=%04o C=%02o F=%02o OP.UNDEFINED\n", P, C, F);
-    return Halt();
-}
 
 
 int CheckIdx(int x, Toggle cy)
@@ -1460,7 +1774,15 @@ int Step(void)
 	F = BYTE(w); w >>= 6;
 	I = BYTE(w); w >>= 6;
 	A = IX_MASK & w; if (SIGN(IR)) A += SM_SIGN;
+    if (I > 6) {
+        fprintf(stderr, "-E-MIX: LOC=%04o I=%02o ILLEGAL INDEX\n", P, I);
+        return 1;
+    }
 	M = I ? smADD(A, reg[I]) : A;
+    if (~IX_MASK & M) {
+        fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o ILLEGAL ADDRESS\n", P, PLUS(M), MAG(M));
+        return 1;
+    }
 	switch (C) {
 	case 0: /*NOP*/
 		break;
@@ -1472,7 +1794,9 @@ int Step(void)
 		rA = w;
 		break;
 	case 2: /*SUB*/
-		rA = smSUB(rA, GETV); if (CY) OT = CY;
+        if (GetV(M, F, &w))
+            return 1;
+		rA = smSUB(rA, w); if (CY) OT = CY;
 		break;
 	case 3: /*MUL*/
         if (GetV(M, F, &w))
@@ -1505,7 +1829,7 @@ int Step(void)
 			case 2: /*HLT*/
 				return Halt();
 			default:
-				return UndefinedOp(C, F);
+				return FieldError(F);
 			};
 		}
 		break;
@@ -1513,7 +1837,7 @@ int Step(void)
 		{	Word signA, signX;
 
 			if (SIGN(M))
-				return UndefinedOp(C, F);
+				return FieldError(F);
 			else {
 				signA = SIGN(rA); signX = SIGN(rX);
 				switch(F){
@@ -1540,7 +1864,7 @@ int Step(void)
 					rA += signA; rX += signX;
 					break;
 				default:
-					return UndefinedOp(C, F);
+					return FieldError(F);
 				}
 			}
 		}
@@ -1595,7 +1919,6 @@ int Step(void)
                 WaitFor(devs[F].evt);
             return 0;
         }
-		// Lapse(devs[F].evt);
         ASSERT(!Waiting());
         switch (C) {
         case 35: devIOC(F, M); break;
@@ -1625,7 +1948,7 @@ int Step(void)
 		case 8: /*JNE*/	cond = EQUAL != CI; break;
 		case 9: /*JLE*/ cond = LESS == CI || EQUAL == CI; break;
 		default:
-			return UndefinedOp(C, F);
+			return FieldError(F);
 		}
 		if (cond) {
 			if (1 != F)
@@ -1644,7 +1967,7 @@ int Step(void)
 		case 4: /*JrNZ*/cond = MAG(w); break;
 		case 5: /*JrNP*/cond = !MAG(w) || SIGN(w); break;
 		default:
-			return UndefinedOp(C, F);
+			return FieldError(F);
 		}
 		if (cond) {
 			rJ = P + 1;
@@ -1674,7 +1997,7 @@ int Step(void)
 			reg[x] = smNEG(M);
 			break;
 		default:
-			return UndefinedOp(C, F);
+			return FieldError(F);
 		}
 		break;
 	case 56: case 57: case 58: case 59: case 60: case 61: case 62: case 63: /*CMPr*/

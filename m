@@ -1,3 +1,4 @@
 #!/bin/bash
-cp hello.dck reader
-./mix -t -g 16 -x tester >mix.log 2>&1
+cat cardload.dek hello.dek >reader
+# cat cardload.dek primes.dek >reader
+./mix -t -u -g 16 -x tester >mix.log 2>&1
