@@ -13,15 +13,15 @@
  *
  *  TODO
  *  ====
- *  - do I/O at half time
- *  - wait on busy device
- *  + rename checks, implement throw or check everything before op
+ *  - assembler
+ *  - simplify disassembler mnemonics
  *  
  *
  *  History:
  *  ========
  *  250619AP    changed CS/RUN to STATE
  *              added Schedule(), wait on busy device
+ *				I/O at half time
  *  250618AP    CS - control state, changed status() display
  *              added disk/drum rotational delay
  *              added stats: nonzero locations, total/idle tyme
@@ -56,7 +56,7 @@
 #if defined(NDEBUG)
 # define ASSERT(x)
 #else
-# define ASSERT(x)  __assert(__LINE__,__FUNCTION__,x,""#x)
+# define ASSERT(x)  __assert(__LINE__,"fun",x,""#x)
 void __assert(int lno, const char *fun, int cond, const char *expr)
 {
     if (!cond) {
@@ -70,10 +70,9 @@ void __assert(int lno, const char *fun, int cond, const char *expr)
 char *strtolower(char *s)
 {
     char *p;
-    if ((p = s)) {
+    if ((p = s))
         while ((*p = tolower(*p)))
             p++;
-    }
     return s;
 }
 
@@ -81,10 +80,9 @@ char *strtolower(char *s)
 char *strtoupper(char *s)
 {
     char *p;
-    if ((p = s)) {
+    if ((p = s))
         while ((*p = toupper(*p)))
             p++;
-    }
     return s;
 }
 
@@ -104,7 +102,7 @@ Toggle TRANS;
 char TRANSNM[5+1];
 
 FILE *LPT;
-unsigned int Tyme, IdleTyme, InstCount;
+unsigned Tyme, IdleTyme, InstCount, TraceCount;
 unsigned short freq[MAX_MEM+1];
 MachineState STATE, STATESAV;
 Toggle CY;
@@ -232,9 +230,8 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 		if (1 & a)
 			x += SM_MSB;
 		a >>= 1;
-		if (circ && sav) {
+		if (circ && sav)
 			a += SM_MSB;
-		}
 	}
 	*pa = a;
 	*px = x;
@@ -294,6 +291,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	}
 	if (SIGN(a) != SIGN(v))
 		ma += SM_SIGN;
+
 	mx = SIGN(a) + MAG(mx);
 	*pquo = mx;
 	*prem = ma;
@@ -415,9 +413,8 @@ void MemMove(Word src, Word dst, int n)
 	src = MAG(src); dst = MAG(dst);
 		
 	if ((src <= dst && dst < src + n) || (dst <= src && src < dst + n)) {
-		for (i = n-1; i >= 0; i--) {
+		for (i = n-1; i >= 0; i--)
 			mem[dst + i] = mem[src + i];
-		}
 	} else {
 		for (i = 0; i < n; i++)
 			mem[dst++] = mem[src++];
@@ -554,6 +551,7 @@ typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT} EventType;
 struct __Event {
     EventType what;
     unsigned when;
+    unsigned LOC;
     unsigned M;
     int next;
 } events[MAX_DEVS];
@@ -565,18 +563,29 @@ void blkRead(int u, unsigned adr, Byte *cvt);
 void blkWrite(int u, unsigned adr, char *cvt);
 
 
+static char *sio[] = {
+	"DOIO.NOP",
+	"DOIO.IOC",
+	"DOIO.IN",
+	"DOIO.OUT"
+};
+
 void doIO(int u)
 {
-    Word M;
+    Word M, LOC;
     int x;
 
     ASSERT(EventH != u+1);
     ASSERT(0 == events[u].next);
     ASSERT(DO_NOTHING != events[u].what);
 
+    LOC = events[u].LOC;
     M = events[u].M;
     x = devIdx(u);
 
+	if (TRACEIO)
+    	fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, u, M, sio[events[u].what]);
+    	
     switch (events[u].what) {
     case DO_NOTHING:
         break;
@@ -590,6 +599,19 @@ void doIO(int u)
         blkWrite(u, M, IOchar[x].m2a);
         break;
     }
+    events[u].what = DO_NOTHING;
+}
+
+void DoEvents(void)
+{
+	int u;
+	
+	while (EventH && events[EventH-1].when <= Tyme) {
+		u = EventH-1;
+		EventH = events[u].next;
+		events[u].next = 0;
+		doIO(u);
+	}
 }
 
 
@@ -610,23 +632,34 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     when = Tyme + delta / 2;
     events[u].what = what;
     events[u].when = when;
+    events[u].LOC = P;
     events[u].M = M;
 
-    if (EventH) {
-        i = EventH-1;
-        while (0 != events[i].next && events[i].when <= when) {
-            p = i;
-            i = events[i].next;
-        }
+    i = EventH;
+    while (i && events[i-1].when <= when) {
+    	p = i;
+        i = events[i-1].next;
     }
-    if ((0 == EventH) || (EventH-1 == i)) { /* empty or head */
+    if ((0 == EventH) || (EventH == i)) { /* empty or head */
         events[u].next = EventH;
         EventH = u+1;
-    } else if (0 == events[i].next) { /* tail */
-        events[i].next = u;
-    } else { /* middle */
-        events[p].next = u;
+    } else if (0 == events[p-1].next) /* tail */
+        events[p-1].next = u+1;
+    else { /* middle */
+        events[p-1].next = u+1;
         events[u].next = i;
+    }
+    
+    if (TRACEIO) {
+	    fprintf(stderr, "-I-MIX: *********** SCHEDULED I/O ***********\n");
+	    i = EventH;
+	    while (i) {
+		    p = i-1;
+		   	fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n",
+		   		events[p].when, events[p].LOC, p, events[p].M, sio[events[p].what]);
+		    i = events[p].next;
+	    }
+	    fprintf(stderr, "-I-MIX: *************************************\n");
     }
 }
 
@@ -704,11 +737,11 @@ void blkRead(int u, unsigned adr, Byte *cvt)
 	
     /* skip CR/LF */
     c = getc(devs[u].fd);
-    while ('\n' == c || '\r' == c) {
+    while ('\n' == c || '\r' == c)
         c = getc(devs[u].fd);
-    }
-    if ('\n' != c && '\r' != c)
+    if ('\n' != c && '\r' != c) {
         ungetc(c, devs[u].fd);
+    }
 
 	n = Blk_size * BYTES;
 	ret = fread(tmp, sizeof(char), n, devs[u].fd);
@@ -761,8 +794,10 @@ void blkWrite(int u, unsigned adr, char *cvt)
 	}
 	for (i = 0; i < n; i++)
 		buf[i] = cvt[tmp[i]];
-    if (IOchar[x].cr)
+
+    if (IOchar[x].cr) {
         buf[n++] = '\n';
+    }
 
 	ret = fwrite(buf, sizeof(char), n, fd);
 	if (ret == n) {
@@ -779,12 +814,14 @@ void blkSeek(int u, unsigned pos)
 {
 	int x;
 	
-	x = devIdx(u);
-    if (stdin != devs[u].fd) {
-        unsigned blk_size = IOchar[x].blk_size * (u > DEV_DK ? 5 : sizeof(Word));
-	    fseek(devs[u].fd, pos * blk_size, SEEK_SET);
-    }
-	devs[u].pos = pos;
+	if (pos != devs[u].pos) {
+		x = devIdx(u);
+    	if (stdin != devs[u].fd) {
+        	unsigned blk_size = IOchar[x].blk_size * (u > DEV_DK ? 5 : sizeof(Word));
+	    	fseek(devs[u].fd, pos * blk_size, SEEK_SET);
+    	}
+		devs[u].pos = pos;
+	}
 }
 
 
@@ -807,8 +844,9 @@ int devOpen(int u)
 	devs[u].pos = 0;
 	devs[u].max_pos = 0;
 	fd = fopen(devname, IOchar[x].fam);
-    if (TRACEIO)
+    if (TRACEIO) {
         fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o INIT %s\n", P, u, devname);
+    }
 	if (fd) {
 		if (u <= DEV_MT|| DEV_CR == u) {
 			fseek(fd, 0, SEEK_END);
@@ -836,11 +874,17 @@ unsigned Diff(unsigned a, unsigned b)
 }
 
 
-unsigned doIOC(int u,int M)
+unsigned doIOC(int u,int *pM)
 {
 	int x;
-	unsigned new_pos, old_track, new_track;
+	int new_pos, old_track, new_track;
+	int M;
 	
+	M = *pM;
+	
+    if (TRACEIO)
+	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IOC\n", P, u, M);
+
 	x = devIdx(u);	
 	if (!M) {
 		if (u <= DEV_MT) {
@@ -861,8 +905,9 @@ unsigned doIOC(int u,int M)
             new_pos = 0;
 		} else
             goto ErrOut;
-        blkSeek(u, new_pos);
+        *pM = new_pos;
 		return IOchar[x].seek_tyme * M;
+		
 	}
 	if (u <= DEV_MT) {
 		if (M > 0) {
@@ -876,7 +921,7 @@ unsigned doIOC(int u,int M)
 				M = devs[u].pos;
             new_pos = devs[u].pos - M;
 		}
-        blkSeek(u, new_pos);
+        *pM = new_pos;
 		return IOchar[x].in_tyme * M;
 	}
 ErrOut:
@@ -890,9 +935,12 @@ void devIOC(int u, int M)
 {
     unsigned delta;
 
-    delta = doIOC(u, M);
-    if (!devStuck(u))
-        Schedule(delta, u, DO_IOC, M);
+    delta = doIOC(u, &M);
+    if (!devStuck(u)) {
+		// blkSeek(u, M);
+		if (delta)
+			Schedule(delta, u, DO_IOC, M);
+    }
 }
 
 
@@ -900,35 +948,41 @@ void devINP(int u, Word M)
 {
 	int x;
 	char *errmsg = NULL;
-    Byte *cvt = NULL;
+    unsigned delta;
 	
 	x = devIdx(u);
     if (CheckAddr(M, "IN BUFFER")
         || CheckAddr(M + IOchar[x].blk_size, "IN BUFFER END"))
+    {
         return;
+    }
 	
 	M = MAG(M);
-
+	delta = 0;
+	
     if (TRACEIO)
 	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IN\n", P, u, M);
 
-	devs[u].evt = Tyme;
 	if (u <= DEV_MT) {
 		if (devs[u].pos >= devs[u].max_pos) {
 			errmsg = "EOT"; goto ErrOut;
 		}
 	} else if (u <= DEV_DK) {
-		unsigned delta = doIOC(u, 0);
-        devs[u].evt += delta + IOchar[x].rot_tyme * Diff(Tyme & 63, BYTE(rX)) / 64.0;
-	} else if (DEV_CR == u) {
-        cvt = cr_a2m;
-	} else if (DEV_PT == u) {
-        cvt = a2m;
-	} else {
+		int new_pos = 0;
+		delta += doIOC(u, &new_pos);
+		if (!devStuck(u)) {
+			if (delta)
+				blkSeek(u, new_pos);
+        	delta += IOchar[x].rot_tyme * Diff(Tyme & 63, BYTE(rX)) / 64.0;
+    	}
+	} else if (DEV_CR != u && DEV_PT != u && DEV_TT != u) {
 		errmsg = "UNSUPPORTED"; goto ErrOut;
 	}
-    blkRead(u, MAG(M), cvt);
-	devs[u].evt += IOchar[x].in_tyme;
+	if (!devStuck(u)) {
+    	// blkRead(u, MAG(M), cvt);
+    	delta += IOchar[x].in_tyme;
+    	Schedule(delta, u, DO_IN, M);		
+	}
 	return;
 ErrOut:
 	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IN %s\n", P, u, M, errmsg);
@@ -940,26 +994,33 @@ void devOUT(Word u,Word M)
 {
 	int x;
 	char *errmsg = NULL;
-    char *cvt = NULL;
+    unsigned delta;
 	
 	x = devIdx(u);
 	if (CheckAddr(M, "OUT BUFFER")
         || CheckAddr(M + IOchar[x].blk_size, "OUT BUFFER END"))
+    {
         return;
+    }
 	
 	M = MAG(M);
+	delta = 0;
 
-	devs[u].evt = Tyme;
+    if (TRACEIO)
+	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.OUT\n", P, u, M);
+
 	if (u <= DEV_MT) {
 		if (devs[u].pos >= IOchar[x].max_pos) {
 			errmsg = "MAG.TAPE FULL"; goto ErrOut;
 		}
 	    devs[u].max_pos = devs[u].pos;
 	} else if (u <= DEV_DK) {
-		unsigned delta = doIOC(u, 0);
-        if (!devStuck(u)) {
-            devs[u].evt += delta + IOchar[x].rot_tyme * Diff(Tyme & 63, BYTE(rX)) / 64.0;
-		    blkWrite(u, M, NULL);
+		int new_pos = 0;
+		delta += doIOC(u, &new_pos);
+		if (!devStuck(u)) {
+			if (delta)
+				blkSeek(u, new_pos);
+            delta += IOchar[x].rot_tyme * Diff(Tyme & 63, BYTE(rX)) / 64.0;
         }
 	} else if (DEV_CR < u) {
         if (DEV_PT == u) {
@@ -967,12 +1028,14 @@ void devOUT(Word u,Word M)
 			    errmsg = "PAPER TAPE FULL"; goto ErrOut;
 		    }
         }
-		cvt = DEV_CP == u ? cr_m2a : m2a;
 	} else {
 		errmsg = "UNSUPPORTED"; goto ErrOut;
 	}
-    blkWrite(u, M, cvt);
-	devs[u].evt += IOchar[x].out_tyme;
+	if (!devStuck(u)) {
+    	// blkWrite(u, M, cvt);
+    	delta += IOchar[x].out_tyme;
+    	Schedule(delta, u, DO_OUT, M);
+	}
 	return;
 ErrOut:
 	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.OUT %s\n", P, u, M, errmsg);
@@ -1019,6 +1082,167 @@ void xprint(Word w)
     xprin(w); fprintf(LPT, " ");
 }
 
+#define MM(c,f)	(((f) << 6) + (c))
+static struct {
+	char *nm;
+	int  c0de;
+} mnemosx[] = {
+	{"NOP ", MM(00,05)},
+	{"ADD ", MM(01,05)},
+	{"SUB ", MM(02,05)},
+	{"MUL ", MM(03,05)},
+	{"DIV ", MM(04,05)},
+	{"NUM ", MM(05,00)},
+	{"CHAR", MM(05,01)},
+	{"HLT ", MM(05,02)},
+	{"SLA ", MM(06,00)},
+	{"SRA ", MM(06,01)},
+	{"SLAX", MM(06,02)},
+	{"SRAX", MM(06,03)},
+	{"SLC ", MM(06,04)},
+	{"SRC ", MM(06,05)},
+	{"MOVE", MM(07,00)},
+	{"LDA ", MM(010,05)},
+	{"LD1 ", MM(011,05)},
+	{"LD2 ", MM(012,05)},
+	{"LD3 ", MM(013,05)},
+	{"LD4 ", MM(014,05)},
+	{"LD5 ", MM(015,05)},
+	{"LD6 ", MM(016,05)},
+	{"LDX ", MM(017,05)},
+	{"LDAN", MM(020,05)},
+	{"LD1N", MM(021,05)},
+	{"LD2N", MM(022,05)},
+	{"LD3N", MM(023,05)},
+	{"LD4N", MM(024,05)},
+	{"LD5N", MM(025,05)},
+	{"LD6N", MM(026,05)},
+	{"LDXN", MM(027,05)},
+	{"STA ", MM(030,05)},
+	{"ST1 ", MM(031,05)},
+	{"ST2 ", MM(032,05)},
+	{"ST3 ", MM(033,05)},
+	{"ST4 ", MM(034,05)},
+	{"ST5 ", MM(035,05)},
+	{"ST6 ", MM(036,05)},
+	{"STX ", MM(037,05)},
+	{"STJ ", MM(040,02)},
+	{"STZ ", MM(041,05)},
+	{"JBUS", MM(042,00)},
+	{"IOC ", MM(043,00)},
+	{"IN  ", MM(044,00)},
+	{"OUT ", MM(045,00)},
+	{"JRED", MM(046,00)},
+	{"JMP ", MM(047,00)},
+	{"JSJ ", MM(047,01)},
+	{"JOV ", MM(047,02)},
+	{"JNOV", MM(047,03)},
+	{"JL  ", MM(047,04)},
+	{"JE  ", MM(047,05)},
+	{"JG  ", MM(047,06)},
+	{"JGE ", MM(047,07)},
+	{"JNE ", MM(047,010)},
+	{"JLE ", MM(047,011)},
+	
+	{"JAN AI", MM(050,00)},
+	{"J1N AI", MM(051,00)},
+	{"J2N AI", MM(052,00)},
+	{"J3N AI", MM(053,00)},
+	{"J4N AI", MM(054,00)},
+	{"J5N AI", MM(055,00)},
+	{"J6N AI", MM(056,00)},
+	{"JXN AI", MM(057,00)},
+	
+	{"JAZ AI", MM(050,01)},
+	{"J1Z AI", MM(051,01)},
+	{"J2Z AI", MM(052,01)},
+	{"J3Z AI", MM(053,01)},
+	{"J4Z AI", MM(054,01)},
+	{"J5Z AI", MM(055,01)},
+	{"J6Z AI", MM(056,01)},
+	{"JXZ AI", MM(057,01)},
+
+	{"JAP AI", MM(050,02)},
+	{"J1P AI", MM(051,02)},
+	{"J2P AI", MM(052,02)},
+	{"J3P AI", MM(053,02)},
+	{"J4P AI", MM(054,02)},
+	{"J5P AI", MM(055,02)},
+	{"J6P AI", MM(056,02)},
+	{"JXP AI", MM(057,02)},
+
+	{"JANNAI", MM(050,03)},
+	{"J1NNAI", MM(051,03)},
+	{"J2NNAI", MM(052,03)},
+	{"J3NNAI", MM(053,03)},
+	{"J4NNAI", MM(054,03)},
+	{"J5NNAI", MM(055,03)},
+	{"J6NNAI", MM(056,03)},
+	{"JXNNAI", MM(057,03)},
+	
+	{"JANZAI", MM(050,04)},
+	{"J1NZAI", MM(051,04)},
+	{"J2NZAI", MM(052,04)},
+	{"J3NZAI", MM(053,04)},
+	{"J4NZAI", MM(054,04)},
+	{"J5NZAI", MM(055,04)},
+	{"J6NZAI", MM(056,04)},
+	{"JXNZAI", MM(057,04)},
+
+	{"JANPAI", MM(050,05)},
+	{"J1NPAI", MM(051,05)},
+	{"J2NPAI", MM(052,05)},
+	{"J3NPAI", MM(053,05)},
+	{"J4NPAI", MM(054,05)},
+	{"J5NPAI", MM(055,05)},
+	{"J6NPAI", MM(056,05)},
+	{"JXNPAI", MM(057,05)},
+
+	{"INCAAI", MM(060,00)},
+	{"INC1AI", MM(061,00)},
+	{"INC2AI", MM(062,00)},
+	{"INC3AI", MM(063,00)},
+	{"INC4AI", MM(064,00)},
+	{"INC5AI", MM(065,00)},
+	{"INC6AI", MM(066,00)},
+	{"INCXAI", MM(067,00)},
+
+	{"DECAAI", MM(060,01)},
+	{"DEC1AI", MM(061,01)},
+	{"DEC2AI", MM(062,01)},
+	{"DEC3AI", MM(063,01)},
+	{"DEC4AI", MM(064,01)},
+	{"DEC5AI", MM(065,01)},
+	{"DEC6AI", MM(066,01)},
+	{"DECXAI", MM(067,01)},
+	
+	{"ENTAAI", MM(060,02)},
+	{"ENT1AI", MM(061,02)},
+	{"ENT2AI", MM(062,02)},
+	{"ENT3AI", MM(063,02)},
+	{"ENT4AI", MM(064,02)},
+	{"ENT5AI", MM(065,02)},
+	{"ENT6AI", MM(066,02)},
+	{"ENTXAI", MM(067,02)},
+
+	{"ENNAAI", MM(060,03)},
+	{"ENN1AI", MM(061,03)},
+	{"ENN2AI", MM(062,03)},
+	{"ENN3AI", MM(063,03)},
+	{"ENN4AI", MM(064,03)},
+	{"ENN5AI", MM(065,03)},
+	{"ENN6AI", MM(066,03)},
+	{"ENNXAI", MM(067,03)},
+
+	{"CMPAAIF", MM(070,05)},
+	{"CMP1AIF", MM(071,05)},
+	{"CMP1AIF", MM(072,05)},
+	{"CMP1AIF", MM(073,05)},
+	{"CMP1AIF", MM(074,05)},
+	{"CMP1AIF", MM(075,05)},
+	{"CMP1AIF", MM(076,05)},
+	{"CMPXAIF", MM(077,05)},
+};
 
 
 char mnemo[5];
@@ -1027,17 +1251,18 @@ void decode(Word C, Word F)
 {
 	static char *regnames = "A123456X";
 	static char *mnemos[] = {
-		" NOP ADD SUB MUL DIV \010xxx\011xxxMOVE",
-		" LDr ",
-		" LDrN",
-		" STr ",
-		" STJ STZ JBUSIOC IN  OUT JRED\012xxx",
-		"\006JrN JrZ JrP JrNNJrNZJrNP",
-		"\004INCrDECrENTrENNr",
-		" CMPr",
- 		"\003NUM CHARHLT ",
- 		"\006SLA SRA SLAXSRAXSLC SRC ",
- 		"\012JMP JSJ JOV JNOVJL  JE  JG  JGE JNE JLE "
+		/*000*/" NOP ADD SUB MUL DIV \010xxx\011xxxMOVE",
+		/*001*/" LDr ",
+		/*002*/" LDrN",
+		/*003*/" STr ",
+		/*004*/" STJ STZ JBUSIOC IN  OUT JRED\012xxx",
+		/*005*/"\006JrN JrZ JrP JrNNJrNZJrNP",
+		/*006*/"\004INCrDECrENTrENNr",
+		/*007*/" CMPr",
+
+ 		/*010*/"\003NUM CHARHLT ",
+ 		/*011*/"\006SLA SRA SLAXSRAXSLC SRC ",
+ 		/*012*/"\012JMP JSJ JOV JNOVJL  JE  JG  JGE JNE JLE "
 	};
 	int nf;
 	char *s;
@@ -1074,8 +1299,9 @@ void decode(Word C, Word F)
 
 int GetV(Word M, Byte F, Word *ret)
 {
-    if (CheckMemRead(M))
+    if (CheckMemRead(M)) {
         return 1;
+    }
     *ret = field(MemRead(M),F);
     return 0;
 }
@@ -1105,7 +1331,7 @@ void Status(Word P)
   LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME
 N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
-	if (0 == (InstCount % 31))
+	if (0 == (TraceCount++ % 31))
 		fprintf(stderr,"  LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME\n");
 	fprintf(stderr, "%c%04o %04d ", ssta[STATE], P, freq[P] % 9999);
     xprint(A); bprint(I); bprint(F); bprint(C);
@@ -1142,6 +1368,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 	wprint(rA); wprint(rX);
 	for (i = 1; i <= 6; i++)
 		xprint(reg[i]);
+
 	xprint(rJ);
 	fprintf(stderr, "%c %c %07u\n", sot[OT], sci[CI], Tyme);
 }
@@ -1224,8 +1451,9 @@ int Step(void)
 	Word w;
 	int cond, x;
 
-    if (CheckMemRead(P))
+    if (CheckMemRead(P)) {
         return 1;
+	}
 	IR = MemRead(P);
 	w = IR;
 	C = BYTE(w); w >>= 6;
@@ -1284,9 +1512,9 @@ int Step(void)
 	case 6:
 		{	Word signA, signX;
 
-			if (SIGN(M)) {
+			if (SIGN(M))
 				return UndefinedOp(C, F);
-			} else {
+			else {
 				signA = SIGN(rA); signX = SIGN(rX);
 				switch(F){
 				case 0: /*SLA*/
@@ -1363,10 +1591,8 @@ int Step(void)
 			return 0;
         if (devBusy(F)) {
             IdleTyme++;
-            if (!Waiting()) {
+            if (!Waiting())
                 WaitFor(devs[F].evt);
-                return 0;
-            }
             return 0;
         }
 		// Lapse(devs[F].evt);
@@ -1477,9 +1703,10 @@ void Run(Word p)
         }
         OLDP = P;
         Step();
-        if (Waiting()) {
+        DoEvents();
+        if (Waiting())
             P = OLDP;
-        } else {
+        else {
             freq[OLDP]++; InstCount++;
         }
 	}
@@ -1494,15 +1721,19 @@ void Init(void)
 	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
 	STATE = S_HALT; Halt();
-    TRACE = OFF; TRACEIO = OFF; TRANS = OFF;
-    for (i = 0; i < sizeof(TRANSNM); i++)
+    TRACE = OFF; TRACEIO = OFF; TraceCount = 0;
+    TRANS = OFF;
+    for (i = 0; i < sizeof(TRANSNM); i++) {
         TRANSNM[i] = 0;
+    }
 
-	for (i = 0; i <= MAX_MEM; i++)
+	for (i = 0; i <= MAX_MEM; i++) {
 		freq[i] = 0;
+	}
 
-	for (i = 0; i < 256; i++)
+	for (i = 0; i < 256; i++) {
 		a2m[i] = cr_a2m[i] = ' ';
+	}
 
 	for (i = 0; i < 64; i++) {
 		a2m[(int) m2a[i]] = i;
@@ -1540,10 +1771,11 @@ void Finish(void)
 
 void Usage(void)
 {
-	fprintf(stderr, "usage: mix [-g dev][-t][-x name]\n");
+	fprintf(stderr, "usage: mix [-g dev][-tu]][-x name]\n");
     fprintf(stderr, "options:\n");
     fprintf(stderr, "    -g unit    push GO button on unit\n");
     fprintf(stderr, "    -t         enable tracing\n");
+    fprintf(stderr, "	 -u			enable I/O tracing\n");
     fprintf(stderr, "    -x name    print nonzero locations in TRANS fmt\n");
 	exit(1);
 }
@@ -1554,6 +1786,9 @@ void Go(int u)
 	if (u < 0 || u >= MAX_DEVS || DEV_CP == u || DEV_LP == u || DEV_TT == u)
 		Usage();
 	devINP(u, 0);
+	Tyme = devs[u].evt;
+	DoEvents();
+	Tyme = 0;
 	Run(0);
 }
 
@@ -1572,6 +1807,7 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
         fprintf(LPT, "LOC        ");
         for (i = 0; i < STRIDE; i++)
             fprintf(LPT, "%d           ", i);
+
         fprintf(LPT, "%*sFREQUENCY  COUNTS\n", 1 + (6*STRIDE - 17) / 2, " ");
     }
 
@@ -1605,7 +1841,7 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
             for (j = minj; j < minj + STRIDE; j++) {
                 if (j > maxj)
                     strcpy(buf, "0000000000");
-                else {
+            	else {
                     Word w = mem[i + j];
                     sprintf(buf, "%010d", MAG(w));
                     if (SIGN(w))
@@ -1625,7 +1861,7 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
     }
     if (dotrans)
         fprintf(LPT, "TRANS0%04d%*s\n", dotrans - 1, 70, " ");
-    else {
+	else {
         fprintf(LPT, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
         fprintf(LPT, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
     }
@@ -1655,12 +1891,14 @@ int main(int argc, char*argv[])
 		case 't':
 			TRACE = ON;
 			break;
+		case 'u':
+			TRACEIO = ON;
+			break;
         case 'x':
             if (i + 1 < argc) {
                 strncpy(TRANSNM, argv[++i], 5);
                 strtoupper(TRANSNM);
-            }
-            else
+            } else
                 Usage();
             TRANS = ON;
             break;

@@ -1,3 +1,4 @@
+CC = gcc
 CFLAGS = -Wall -pedantic -g
 LDFLAGS = -g
 SRCS = mix.c
