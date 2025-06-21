@@ -1,0 +1,18 @@
+*    EXAMPLE MIX DECK
+READER     EQU  18
+PRINTER    EQU  16
+           ORIG 1000
+START      IN   BUFFER(READER)
+           JBUS *(READER)
+           LDA  BUFFER
+           LD1  =23=
+1H         STA  BUFFER,1
+           DEC1 1
+           J1P  1B
+           STZ  BUFFER+2(1:2)
+           OUT  BUFFER(PRINTER)
+           HLT  *
+BUFFER     ORIG *+24
+           END  START
+THIS IS A DATA CARD
+/*
