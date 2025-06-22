@@ -19,6 +19,7 @@
  *
  *  History:
  *  ========
+ * 	250622AP	TT and PT fixes, for shift M should be non-negative
  *  250621AP    assembler debugging
  *  250620AP    more runtime checks
  *              skeleton assembler
@@ -482,13 +483,8 @@ void MemMove(Word src, Word dst, int n)
 
 	src = MAG(src); dst = MAG(dst);
 		
-	if ((src <= dst && dst < src + n) || (dst <= src && src < dst + n)) {
-		for (i = n-1; i >= 0; i--)
-			mem[dst + i] = mem[src + i];
-	} else {
-		for (i = 0; i < n; i++)
-			mem[dst++] = mem[src++];
-	}
+	for (i = 0; i < n; i++)
+		mem[dst++] = mem[src++];
 }
 
 
@@ -528,7 +524,7 @@ IOC
 /*		                     1         2         3         4         5         6	 */
 /*		           0123456789012345678901234567890123456789012345678901234567890123*/
 char    m2a[64] = " ABCDEFGHI~JKLMNOPQR[#STUVWXYZ0123456789.,()+-*/=$<>@;:'        ";
-char cr_m2a[64] = " ABCDEFGHI~JKLMNOPQR  STUVWXYZ0123456789.,()+-                  ";
+char cr_m2a[64] = " ABCDEFGHI~JKLMNOPQR  STUVWXYZ0123456789.,()+-*/                ";
 Byte a2m[256], cr_a2m[256];
 
 
@@ -574,8 +570,9 @@ Byte a2m[256], cr_a2m[256];
 #define DEV_CR	16
 #define DEV_CP	17
 #define DEV_LP	18
-#define DEV_PT	19
-#define DEV_TT  20
+#define DEV_TT  19
+#define DEV_PT	20
+
 
 #define LP_BLOCK 24
 #define LP_LINES 66
@@ -784,6 +781,10 @@ int devBusy(int u)
     return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt);
 }
 
+int IsCrLf(int ch)
+{
+	return '\r' == ch || '\n' == ch;
+}
 
 void blkRead(int u, unsigned adr, Byte *cvt)
 {
@@ -807,16 +808,28 @@ void blkRead(int u, unsigned adr, Byte *cvt)
 	
     /* skip CR/LF */
     c = getc(devs[u].fd);
-    while ('\n' == c || '\r' == c)
+    while (IsCrLf(c))
         c = getc(devs[u].fd);
-    if ('\n' != c && '\r' != c) {
+    if (!IsCrLf(c)) {
         ungetc(c, devs[u].fd);
     }
 
 	n = Blk_size * BYTES;
 	ret = fread(tmp, sizeof(char), n, devs[u].fd);
-	if (ret != n)
-	    goto ErrOut;
+	if (ferror(devs[u].fd))
+		goto ErrOut;
+	if (ret != n) {
+		if (DEV_TT != u)
+			goto ErrOut;
+    }
+    if (DEV_TT == u) {
+	    while (ret && IsCrLf(tmp[ret-1])) {
+			ret--;
+		}
+		for (i = ret; i < n; i++)
+			tmp[i] = ' ';
+	}
+
 
     // tmp[n] = '\0';
     // fprintf(stderr,"{%s}\n", tmp);
@@ -2098,7 +2111,7 @@ int Step(void)
 		{	Word signA, signX;
 
 			if (SIGN(M)) {
-				fprintf(stderr, "-E-MIX: LOC=%04o M=%c%04o ILLEGAL\n", P, PLUS(M), MAG(M));
+				fprintf(stderr, "-E-MIX: LOC=%04o ILLEGAL SIGNED M=%c%04o\n", P, PLUS(M), MAG(M));
 				return Halt();
 			} else {
 				signA = SIGN(rA); signX = SIGN(rX);
@@ -2348,7 +2361,7 @@ void Finish(void)
     for (i = 0; i < MAX_DEVS; i++) {
         if (stdout == devs[i].fdout)
             fflush(devs[i].fdout);
-        if (DEV_PT == i)
+        if (DEV_TT == i)
             continue;
         if (devs[i].fd)
             fclose(devs[i].fd);
