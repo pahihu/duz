@@ -1,3 +1,4 @@
+mingw32-make
 del/q printer
 del/q teste.tra
 .\mix.exe -a example.mix

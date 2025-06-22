@@ -1298,11 +1298,21 @@ char EC[4 + 1];		/* error codes */
 int NE;				/* #error codes */
 char FREF;			/* future ref. */
 Toggle FF;          /* free fmt. */
+char *stok[] = { "ERR", "LOC", "NUM", "SYM"};
 enum {TOK_ERR, TOK_LOC, TOK_NUM, TOK_SYM} T; /* token type */
 char S[10 + 1];     /* parsed symbol */
 Word N;             /* parsed number */
 int  B;             /* binary op */
 int  SX;            /* TOK_SYM FindSym() result */
+
+
+#define ENSURE(ch)  \
+    if (ch != CH) { \
+        fprintf(stderr, "-E-MIX: LINE=%04d %c EXPECTED\n", LNO, CH); \
+        return AsmError(EA_INVCHR); \
+    } \
+    NEXT();
+
 
 /* address has wrong syntax */
 #define EA_ADRSYN	'A'
@@ -1365,7 +1375,7 @@ int IsAlpha(int ch)
     return RANGE(ch,'A','Z') || ('~' == ch);
 }
 
-int Error(char e)
+int AsmError(char e)
 {
 	if (NE < 4)
 		EC[NE++] = e;
@@ -1394,7 +1404,7 @@ int GetSym(void)
         S[i] = ' ';
     S[10] = 0;
     if (n > 9)
-        return Error(EA_MAXLEN);
+        return AsmError(EA_MAXLEN);
     T = TOK_SYM;
     if (isnum) {
         N = 0;
@@ -1435,29 +1445,30 @@ int FindSym(char *S)
     return found;
 }
 
+int LSYM;	/* last DefineSym() result */
+Word LREF;	/* last reference to just defined sym */
 int DefineSym(char *S, Word w, Toggle defd)
 {
     int found;
 
     if (TRACEA)
         fprintf(stderr, "-I-MIX:     DEFINE SYM '%s'\n", S);
-    found = FindSym(S);
+    LSYM = found = FindSym(S);
     if (found) {
-        fprintf(stderr, "-E-MIX: LINE=%04d DUPLICATE SYMBOL %s\n", LNO, S);
         // TAB ARG
         // D 	D	DUPSYM
         // D 	U	ASSERT
         // U 	D	got value
         // U 	U	just another ref in the chain, handle elswhere
         if (syms[found-1].D && defd)
-        	return Error(EA_DUPSYM);
+        	return AsmError(EA_DUPSYM);
         ASSERT(OFF == syms[found-1].D && ON == defd);
         if (TRACEA) {
 	        N = syms[found-1].N;
 	        fprintf(stderr, "-I-MIX:     FUTURE.REF '%s' DEFINED %c%04o (CHAIN %c%04o)\n",
 	        	S, PLUS(w), MAG(w), PLUS(N), MAG(N));
         }
-        syms[found-1].A = syms[found-1].N;
+        LREF = syms[found-1].A = syms[found-1].N;
         syms[found-1].N = w;
         syms[found-1].D = ON;
         FREF = 'L';
@@ -1465,7 +1476,7 @@ int DefineSym(char *S, Word w, Toggle defd)
     }
     if (NSYMS == nsyms) {
         fprintf(stderr, "-E-MIX: SYMBOL TABLE FULL\n");
-        return Error(EA_DUPSYM);
+        return AsmError(EA_DUPSYM);
     }
     if (TRACEA) {
         fprintf(stderr, "-I-MIX:     N=%d\n", w2i(w));
@@ -1476,6 +1487,7 @@ int DefineSym(char *S, Word w, Toggle defd)
     syms[nsyms].A = smNEG(1);
     syms[nsyms].D = defd;
     nsyms++;
+    LSYM = nsyms;
     return 0;
 }
 
@@ -1512,7 +1524,6 @@ Word AtomicExpr(void)
 
 int IsBinOp(void)
 {
-    if (E) return 0;
     if ('+' == CH || '-' == CH || '*' == CH || '/' == CH || ':' == CH) {
         B = CH; NEXT();
         if ((B == '/') && '/' == CH) {
@@ -1528,19 +1539,20 @@ Word Expr(void)
     Word v = 0, w = 0;
 
     if (E) return 0;
-    if ('+' == CH) {
-        NEXT(); v = AtomicExpr();
-    } else if ('-' == CH) {
-        NEXT(); v = smNEG(AtomicExpr());
-    } else {
+    if ('+' == CH || '-' == CH) {
+	    int sign = CH;
+	    NEXT();
+        v = AtomicExpr();
+		if (E) return AsmError(EA_UNDSYM);
+		if ('-' == sign)
+			v = smNEG(v);
+    } else
         /* future reference? */
         v = AtomicExpr();
-        if (E) return 0;
-    }
-    if (E) return Error(EA_UNDSYM);
     while (IsBinOp()) {
+		if (E) return AsmError(EA_UNDSYM);
         w = AtomicExpr();
-        if (E) return Error(EA_MISSOP);
+        if (E) return AsmError(EA_MISSOP);
         OT = OFF;
         switch (B) {
         case '+': v = smADD(v, w); break;
@@ -1553,7 +1565,7 @@ Word Expr(void)
             break;
         }
         if (OT)
-        	Error(EA_OVRFLW);
+        	AsmError(EA_OVRFLW);
     }
     return v;
 }
@@ -1561,10 +1573,26 @@ Word Expr(void)
 Word Apart(void)
 {
     Word v = 0;
+    char *LBEG = NULL, *LEND = NULL;
 
     if (E) return 0;
     if (CH && ',' != CH && '(' != CH) {
+	    if ('=' == CH) {
+        	LBEG = PLN; NEXT();
+	    }
         v = Expr();
+	    if (LBEG) {
+	        /* =123= */
+	        LEND = PLN;
+	        ENSURE('=');
+	        if (LEND - LBEG <= 10) {
+		        *LEND = 0;
+	            /* TBD */
+	            if (!DefineSym(LBEG, P, OFF))
+	            	syms[LSYM-1].A = v;
+	        } else
+	        	AsmError(EA_MAXLEN);
+	    }
         if (E && TOK_SYM == T) {
             E = OFF;
             if (SX) {
@@ -1581,13 +1609,6 @@ Word Apart(void)
     }
     return v;
 }
-
-#define ENSURE(ch)  \
-    if (ch != CH) { \
-        fprintf(stderr, "-E-MIX: LINE=%04d %c EXPECTED\n", LNO, CH); \
-        return Error(EA_INVCHR); \
-    } \
-    NEXT();
 
 Word Ipart(void)
 {
@@ -1617,13 +1638,9 @@ Word Fpart(Word F)
 Word Wvalue(void)
 {
     Word v = 0, w = 0;
-    int f, found;
-    char *LBEG = NULL, *LEND = NULL;
+    int f;
 
     if (E) return 0;
-    if (CH && '=' == CH) {
-        LBEG = PLN;
-    }
     w = Expr();
     f = Fpart(05);
     if (E) return 0;
@@ -1632,22 +1649,6 @@ Word Wvalue(void)
         NEXT();
         w = Expr(); f = Fpart(05);
         v = WriteField(v, f, w);
-    }
-    if (LBEG) {
-        /* =123= */
-        LEND = PLN;
-        ENSURE('=');
-        if (LEND - LBEG <= 10) {
-            strncpy(S, LBEG, LEND - LBEG);
-            found = FindSym(S);
-            if (found--) {
-                v = syms[found].N;
-                syms[found].N = P;
-            } else {
-	            /* TBD */
-                DefineSym(S, P, OFF);
-            }
-        }
     }
     return v;
 }
@@ -1722,20 +1723,22 @@ int Assemble(char *line)
             C = opcodes[found].c0de; 
             F = BYTE(C >> 6);
             C = BYTE(C);
-
+            
             A = Apart();
             I = Ipart();
             F = Fpart(F);
-            if (!RANGE(I,0,63) || !RANGE(F,0,63))
-            	Error(EA_TBIGFI);
-            if (L(F) > R(F))
-            	Error(EA_INVFLD);
+            if (!RANGE(C,042,046)) {
+	            if (!RANGE(I,0,63) || !RANGE(F,0,63))
+	            	AsmError(EA_TBIGFI);
+	            if (L(F) > R(F))
+	            	AsmError(EA_INVFLD);
+			}
             mem[P++] = SIGN(A) + (MAG(A) << 18) + (BYTE(I) << 12) + (BYTE(F) << 6) + C;
             needA = ON;
         } else if (!strcmp(OP, "ORIG")) {
 	        w = Wvalue();
 	        if (CheckAddr(w, NULL))
-	        	Error(EA_INVORG);
+	        	AsmError(EA_INVORG);
 	        else
             	P = w;
         }
@@ -1756,16 +1759,19 @@ int Assemble(char *line)
             needS = ON;
             OPEND = ON;
             if (' ' != LOCATION[0])
-            	Error(EA_ENDLOC);
+            	AsmError(EA_ENDLOC);
         } else
-            Error(EA_UNKOPC);
+            AsmError(EA_UNKOPC);
     }
     if (CH && ' ' != CH) {
 	    if (TRACEA)
 	    	fprintf(stderr, "-I-MIX:     EXTRA OP ('%c',%d)\n", CH, CH);
-    	Error(EA_XTRAOP);
+    	AsmError(EA_XTRAOP);
 	}
 Out:
+	if ('L' == FREF) {
+		needL = ON; FREF = ' ';
+	}
     fprintf(stderr, "%s%c", EC, FREF);
     i = 0;
     if (needA || needW || needS) {
@@ -1781,7 +1787,7 @@ Out:
     if (needP) {
 	    xprint(OLDP);
 	} else i += 6;
-	if (needL) aprint(w);
+	if (needL) aprint(LREF);
 	else i += 5;
 	spaces(i + 1);
     fprintf(stderr, "|%s", line);
@@ -1808,7 +1814,6 @@ int Asm(const char *nm)
     while (ptr && !feof(fd)) {
         if (Assemble(line)) {
             failed = 1;
-            break;
         }
         if (OPEND)
             break;
@@ -2092,9 +2097,10 @@ int Step(void)
 	case 6:
 		{	Word signA, signX;
 
-			if (SIGN(M))
-				return FieldError(F);
-			else {
+			if (SIGN(M)) {
+				fprintf(stderr, "-E-MIX: LOC=%04o M=%c%04o ILLEGAL\n", P, PLUS(M), MAG(M));
+				return Halt();
+			} else {
 				signA = SIGN(rA); signX = SIGN(rX);
 				switch(F){
 				case 0: /*SLA*/
