@@ -13,12 +13,13 @@
  *
  *  TODO
  *  ====
- *  - assembler: 197. local symbols, free fmt, 201. literal const
+ *  - assembler: 197. local symbols, free fmt
  *  - simplify disassembler mnemonics
  *  
  *
  *  History:
  *  ========
+ *  250623AP    literal constants
  * 	250622AP	TT and PT fixes, for shift M should be non-negative
  *  250621AP    assembler debugging
  *  250620AP    more runtime checks
@@ -1037,6 +1038,7 @@ void devINP(int u, Word M)
     if (CheckAddr(M, "IN BUFFER")
         || CheckAddr(M + IOchar[x].blk_size, "IN BUFFER END"))
     {
+        Halt();
         return;
     }
 	
@@ -1083,6 +1085,7 @@ void devOUT(Word u,Word M)
 	if (CheckAddr(M, "OUT BUFFER")
         || CheckAddr(M + IOchar[x].blk_size, "OUT BUFFER END"))
     {
+        Halt();
         return;
     }
 	
@@ -1473,8 +1476,9 @@ int DefineSym(char *S, Word w, Toggle defd)
         // D 	U	ASSERT
         // U 	D	got value
         // U 	U	just another ref in the chain, handle elswhere
-        if (syms[found-1].D && defd)
+        if (syms[found-1].D && defd) {
         	return AsmError(EA_DUPSYM);
+        }
         ASSERT(OFF == syms[found-1].D && ON == defd);
         if (TRACEA) {
 	        N = syms[found-1].N;
@@ -1591,18 +1595,21 @@ Word Apart(void)
     if (E) return 0;
     if (CH && ',' != CH && '(' != CH) {
 	    if ('=' == CH) {
-        	LBEG = PLN; NEXT();
+        	LBEG = PLN-1; NEXT();
 	    }
         v = Expr();
 	    if (LBEG) {
 	        /* =123= */
-	        LEND = PLN;
+	        LEND = PLN-1;
 	        ENSURE('=');
 	        if (LEND - LBEG <= 10) {
 		        *LEND = 0;
 	            /* TBD */
-	            if (!DefineSym(LBEG, P, OFF))
+	            if (!DefineSym(LBEG, P, OFF)) {
 	            	syms[LSYM-1].A = v;
+                    v = smNEG(1);
+                }
+                FREF = '/';
 	        } else
 	        	AsmError(EA_MAXLEN);
 	    }
@@ -1682,11 +1689,70 @@ char* GetWord(char *dst, char *src, int n)
     return src;
 }
 
+#define NEEDAWS needs[0]
+#define NEEDP   needs[1]
+#define NEEDL   needs[2]
+
+void PrintList(char *needs, Word w, Word OLDP, char *line)
+{
+    int i;
+    Word A, I, F, C, INST;
+
+	if ('L' == FREF) {
+		NEEDL = 'L'; FREF = ' ';
+	}
+    fprintf(stderr, "%s%c", EC, FREF);
+    i = 0;
+    if (NEEDAWS) {
+	   	if ('A' == NEEDAWS) {
+            INST = w; w = MAG(w);
+	        C = BYTE(w); w >>= 6;
+	        F = BYTE(w); w >>= 6;
+	        I = BYTE(w); w >>= 6;
+	        A = IX_MASK & w; if (SIGN(INST)) A += SM_SIGN;
+		   	xprint(A); bprint(I); bprint(F); bprint(C);
+    	} else if ('W' == NEEDAWS) {
+	    	wprint(w); i += 3;
+    	} else if ('S' == NEEDAWS) {
+	    	xprint(START); i += 9;
+    	}
+    } else i+= 15;
+    spaces(i + 1); i = 0;
+    if (NEEDP) {
+	    xprint(OLDP);
+	} else i += 6;
+	if (NEEDL) aprint(LREF);
+	else i += 5;
+	spaces(i + 1);
+    fprintf(stderr, "|%s\n", line);
+}
+
+void DefineLiterals(void)
+{
+    int i;
+    char needs[3];
+    Word w;
+
+    NE = 0; strcpy(EC, "    "); FREF = ' ';
+    for (i = 0; i < nsyms; i++) {
+        if ('=' == syms[i].S[0]) {
+            ASSERT(!syms[i].D);
+            NEEDAWS = 'W';
+            NEEDP = 'P';
+            NEEDL = 'L';
+            w = syms[i].A;
+            DefineSym(syms[i].S, P, ON);
+            PrintList(needs, w, P, syms[i].S);
+            MemWrite(P, FULL, w); P++;
+        }
+    }
+}
+
 int Assemble(char *line)
 {
     Word w = 0, OLDP, A, I, F, C;
     int i, found;
-    Toggle needA, needS, needP, needW, needL;
+    char needs[3]; /* A|W|S P L */
 
     if (!FF || '*' == line[0]) {
         strncpy(LINE, line, MAX_LINE);
@@ -1717,7 +1783,7 @@ int Assemble(char *line)
     
     PLN = ADDRESS; CH = 1; NEXT();
     E = OFF; strcpy(EC, "    "); NE = 0; FREF = ' ';
-    needA = OFF; needS = OFF; needW = OFF; needP = ON; needL = OFF;
+    NEEDAWS = 0; NEEDP = 'P'; NEEDL = 0;
 
 	OLDP = P;
     if ('*' == LOCATION[0]) {
@@ -1727,7 +1793,7 @@ int Assemble(char *line)
         w = Wvalue();
         if (' ' != LOCATION[0])
             DefineSym(LOCATION, w, ON);
-        needW = ON; needP = OFF;
+        NEEDAWS = 'W'; NEEDP = 0;
     } else {
         if (' ' != LOCATION[0])
             DefineSym(LOCATION, P, ON);
@@ -1746,8 +1812,8 @@ int Assemble(char *line)
 	            if (L(F) > R(F))
 	            	AsmError(EA_INVFLD);
 			}
-            mem[P++] = SIGN(A) + (MAG(A) << 18) + (BYTE(I) << 12) + (BYTE(F) << 6) + C;
-            needA = ON;
+            MemWrite(P, FULL, w = SIGN(A) + (MAG(A) << 18) + (BYTE(I) << 12) + (BYTE(F) << 6) + C); P++;
+            NEEDAWS = 'A';
         } else if (!strcmp(OP, "ORIG")) {
 	        w = Wvalue();
 	        if (CheckAddr(w, NULL))
@@ -1756,20 +1822,22 @@ int Assemble(char *line)
             	P = w;
         }
         else if (!strcmp(OP, "CON ")) {
-            mem[P++] = w = Wvalue();
-            needW = ON;
+            MemWrite(P, FULL, w = Wvalue()); P++;
+            NEEDAWS = 'W';
         } else if (!strcmp(OP, "ALF ")) {
             Byte buf[5];
             for (i = 0; i < 5; i++) {
                 buf[i] = cr_a2m[CH]; NEXT();
             }
-            mem[P++] = w = Pack(buf, 0);
+            MemWrite(P, FULL, w = Pack(buf, 0)); P++;
             ADDRESS[5] = 0;
-            needW = ON;
+            NEEDAWS = 'W';
         }
         else if (!strcmp(OP, "END ")) {
+            DefineLiterals();
+            OLDP = P;
             START = w = field(Wvalue(), FIELD(4,5));
-            needS = ON;
+            NEEDAWS = 'S';
             OPEND = ON;
             if (' ' != LOCATION[0])
             	AsmError(EA_ENDLOC);
@@ -1782,35 +1850,14 @@ int Assemble(char *line)
     	AsmError(EA_XTRAOP);
 	}
 Out:
-	if ('L' == FREF) {
-		needL = ON; FREF = ' ';
-	}
-    fprintf(stderr, "%s%c", EC, FREF);
-    i = 0;
-    if (needA || needW || needS) {
-	   	if (needA) {
-		   	xprint(A); bprint(I); bprint(F); bprint(C);
-    	} else if (needW) {
-	    	wprint(w); i += 3;
-    	} else if (needS) {
-	    	xprint(START); i += 9;
-    	}
-    } else i+= 15;
-    spaces(i + 1); i = 0;
-    if (needP) {
-	    xprint(OLDP);
-	} else i += 6;
-	if (needL) aprint(LREF);
-	else i += 5;
-	spaces(i + 1);
-    fprintf(stderr, "|%s", line);
+    PrintList(needs, w, OLDP, line);
     return ON == E;
 }
 
 int Asm(const char *nm)
 {
     char *ptr, line[MAX_LINE+1];
-    int failed;
+    int n, failed;
     FILE *fd;
 
     fd = fopen(nm, "rt");
@@ -1825,6 +1872,10 @@ int Asm(const char *nm)
 
     LNO = 1; ptr = fgets(line, MAX_LINE, fd);
     while (ptr && !feof(fd)) {
+        n = strlen(line);
+        while (n && IsCrLf(line[n-1]))
+            n--;
+        line[n] = 0;
         if (Assemble(line)) {
             failed = 1;
         }
@@ -1834,7 +1885,7 @@ int Asm(const char *nm)
     }
     fclose(fd);
     fprintf(stderr, "-I-MIX: ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
-    return failed;
+    return 0;
 }
 
 
@@ -1902,6 +1953,7 @@ int GetV(Word M, Byte F, Word *ret)
     *ret = field(MemRead(M),F);
     return 0;
 }
+
 
 void Status(Word P)
 {
@@ -2035,12 +2087,12 @@ void ToChar(Word *pa, Word *px, Word a)
 
 int Step(void)
 {
-	Word IR, C, F, I, A, M;
+	Word IR, A, I, F, C, M;
 	Word w;
 	int cond, x;
 
     if (CheckMemRead(P)) {
-        return 1;
+        return Halt();
 	}
 	IR = MemRead(P);
 	w = IR;
@@ -2050,12 +2102,12 @@ int Step(void)
 	A = IX_MASK & w; if (SIGN(IR)) A += SM_SIGN;
     if (I > 6) {
         fprintf(stderr, "-E-MIX: LOC=%04o I=%02o ILLEGAL INDEX\n", P, I);
-        return 1;
+        return Halt();
     }
 	M = I ? smADD(A, reg[I]) : A;
     if (~IX_MASK & M) {
         fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o ILLEGAL ADDRESS\n", P, PLUS(M), MAG(M));
-        return 1;
+        return Halt();
     }
 	switch (C) {
 	case 0: /*NOP*/
