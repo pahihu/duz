@@ -19,6 +19,7 @@
  *
  *  History:
  *  ========
+ *  250624AP    local symbols skeleton
  *  250623AP    literal constants
  * 	250622AP	TT and PT fixes, for shift M should be non-negative
  *  250621AP    assembler debugging
@@ -1350,6 +1351,8 @@ int  SX;            /* TOK_SYM FindSym() result */
 #define EA_UNKOPC	'O'
 /* location out of range */
 #define EA_INVORG	'R'
+/* invalid symbol (eg. 2H in ADDRESS) */
+#define EA_INVSYM   'S'
 /* too big F or I spec */
 #define EA_TBIGFI	'T'
 /* undefined symbol other than address */
@@ -1461,6 +1464,15 @@ int FindSym(char *S)
     return found;
 }
 
+Word PREVH[10];
+int IsLocalSym(char *s)
+{
+    int ch1, ch2, ch3;
+
+    ch1 = s[0]; ch2 = s[1]; ch3 = s[2];
+    return IsDigit(ch1) && ('H' == ch2 || 'B' == ch2 || 'F' == ch2) && (' ' == ch3);
+}
+
 int LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
 int DefineSym(char *S, Word w, Toggle defd)
@@ -1512,6 +1524,7 @@ Word AtomicExpr(void)
 {
     int found;
     Word ret = 0;
+    Toggle localB;
 
     if (E) return 0;
     GetSym();
@@ -1526,13 +1539,25 @@ Word AtomicExpr(void)
         ret = N;
         break;
     case TOK_SYM:
+        localB = OFF;
+        if (IsLocalSym(S)) {
+            if ('B' == S[1]) {
+                localB = ON;
+                S[1] = 'H';
+            } else if ('H' == S[1]) {
+                return AsmError(EA_INVSYM);
+            }
+        }
         SX = found = FindSym(S);
         if (found--) {
             if (OFF == syms[found].D) {
+                if (localB)
                 E = ON; /* FUTURE.REF */
             } else
                 ret = syms[found].N;
         } else {
+            if (localB)
+                return AsmError(EA_UNDBCK);
             E = ON; /* UNDEFINED */
         }
     }
@@ -1857,7 +1882,7 @@ Out:
 int Asm(const char *nm)
 {
     char *ptr, line[MAX_LINE+1];
-    int n, failed;
+    int i, n, failed;
     FILE *fd;
 
     fd = fopen(nm, "rt");
@@ -1869,6 +1894,8 @@ int Asm(const char *nm)
 
     failed = 0;
     P = 0; OPEND = OFF;
+    for (i = 0; i < 10; i++)
+        PREVH[i] = smNEG(1);
 
     LNO = 1; ptr = fgets(line, MAX_LINE, fd);
     while (ptr && !feof(fd)) {
