@@ -1541,20 +1541,26 @@ Word AtomicExpr(void)
     case TOK_SYM:
         localB = OFF;
         if (IsLocalSym(S)) {
+            if ('H' == S[1])
+                return AsmError(EA_INVSYM);
             if ('B' == S[1]) {
                 localB = ON;
                 S[1] = 'H';
-            } else if ('H' == S[1]) {
-                return AsmError(EA_INVSYM);
             }
         }
         SX = found = FindSym(S);
         if (found--) {
             if (OFF == syms[found].D) {
                 if (localB)
+                    ASSERT(OFF);
                 E = ON; /* FUTURE.REF */
-            } else
+            } else {
+                if (localB) {
+                    if (P == syms[found].N)
+                        return PREVH[S[0]-'0'];
+                }
                 ret = syms[found].N;
+            }
         } else {
             if (localB)
                 return AsmError(EA_UNDBCK);
@@ -1816,12 +1822,25 @@ int Assemble(char *line)
     }
     if (!strcmp(OP, "EQU ")) {
         w = Wvalue();
-        if (' ' != LOCATION[0])
+        if (' ' != LOCATION[0]) {
+            /* TBD: also below */
+            if (IsLocalSym(LOCATION)) {
+                if ('H' != LOCATION[1])
+                    AsmError(EA_INVSYM);
+                found = FindSym(LOCATION);
+                if (found) {
+                    PREVH[LOCATION[1]-'0'] = syms[found-1].N;
+                    LOCATION[1] = 'F';
+                    /* TBD: resolve 2F */
+                }
+            }
             DefineSym(LOCATION, w, ON);
+        }
         NEEDAWS = 'W'; NEEDP = 0;
     } else {
-        if (' ' != LOCATION[0])
+        if (' ' != LOCATION[0]) {
             DefineSym(LOCATION, P, ON);
+        }
         found = FindOp();
         if (found--) {
             C = opcodes[found].c0de; 
