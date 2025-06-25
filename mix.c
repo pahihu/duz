@@ -136,6 +136,7 @@ Toggle TRACEIO, TRACEA;
 #define SM_SIGN		(1U << 31)
 #define SM_MASK(x)	((1U << (x)) - 1)
 #define IX_MASK		07777
+#define SM_MINUS1	(SM_SIGN + 1U)
 
 #define SIGN(x)		(SM_SIGN & (x))
 #define	SM_WORD		SM_MASK(30)
@@ -363,6 +364,12 @@ void xprint(Word w)
 {
     xprin(w); space();
 }
+
+void cprin(int ch)
+{
+	fprintf(LPT, "%c", ch);
+}
+
 
 
 /* ============== M A C H I N E  S T A T E ================== */
@@ -1363,6 +1370,8 @@ int  SX;            /* TOK_SYM FindSym() result */
 #define EA_OVRFLW	'V'
 /* extra operand */
 #define EA_XTRAOP	'X'
+/* linker error */
+#define EA_LINKLD	'9'
 
 
 #define NSYMS 1500
@@ -1373,6 +1382,10 @@ struct {
     Toggle D;       /* defined? */
 } syms[NSYMS];
 int nsyms;          /* no. of syms */
+
+#define NLOAD 1500
+Word LOAD[2*NLOAD];
+int nload;
 
 Toggle OPEND;       /* "END" ? */
 Word START;         /* start addr */
@@ -1478,9 +1491,14 @@ int LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
 int DefineSymIdx(int found, char *S, Word w, Toggle defd)
 {
+	Toggle islocal;
+	Word adr;
+
+	adr = SM_MINUS1;
     if (found) {
         if (NULL == S)
             S = syms[found-1].S;
+		islocal = IsLocalSym(S);
         // TAB ARG
         // D 	D	DUPSYM
         // D 	U	ASSERT
@@ -1492,13 +1510,29 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
         ASSERT(OFF == syms[found-1].D && ON == defd);
         if (TRACEA) {
 	        N = syms[found-1].N;
-	        fprintf(stderr, "-I-MIX:     FUTURE.REF '%s' DEFINED %c%04o (CHAIN %c%04o)\n",
-	        	S, PLUS(w), MAG(w), PLUS(N), MAG(N));
+	        fprintf(stderr, "-I-MIX:     %s '%s' DEFINED %c%04o (CHAIN %c%04o)\n",
+	        	islocal ? " LOCAL.SYM" : "FUTURE.REF", S, PLUS(w), MAG(w), PLUS(N), MAG(N));
         }
-        LREF = syms[found-1].A = syms[found-1].N;
+        if (islocal) {
+	        ASSERT('B' != S[1]);
+	        if ('F' == S[1]) {
+		       	adr = syms[found-1].N;
+	        }
+       	} else {
+	        LREF = adr = syms[found-1].A = syms[found-1].N;
+	        FREF = 'L';
+        }
         syms[found-1].N = w;
         syms[found-1].D = ON;
-        FREF = 'L';
+        if (SM_MINUS1 != adr) {
+			fprintf(stderr, "LOAD %c%04o %c%04o\n", PLUS(adr), MAG(adr), PLUS(w), MAG(w));
+	        if (nload >= NLOAD) {
+		        fprintf(stderr, "-E-MIX: LOADER TABLE FULL\n");
+		        return AsmError(EA_DUPSYM);
+	        }
+			LOAD[nload++] = adr;
+			LOAD[nload++] = w;
+		}
         return 0;
     }
     ASSERT(NULL != S);
@@ -1519,7 +1553,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
     return 0;
 }
 
-int DefineSym(char *s, Word w, Toggle defd)
+int DefineSym(char *S, Word w, Toggle defd)
 {
     int found;
 
@@ -1577,6 +1611,8 @@ Word AtomicExpr(void)
 
     if (E) return 0;
     GetSym();
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     ATOMICEXPR S='%s' T=%s\n", S, stok[T]);
     switch (T) {
     case TOK_ERR:
         ret = 0;
@@ -1609,6 +1645,8 @@ Word AtomicExpr(void)
             E = ON; /* UNDEFINED */
         }
     }
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     ATOMICEXPR=%c%010o\n", PLUS(ret), MAG(ret));
     return ret;
 }
 
@@ -1636,9 +1674,12 @@ Word Expr(void)
 		if (E) return AsmError(EA_UNDSYM);
 		if ('-' == sign)
 			v = smNEG(v);
-    } else
+    } else {
         /* future reference? */
         v = AtomicExpr();
+    }
+	if (TRACEA)
+		fprintf(stderr, "-I-MIX:     EXPR BEFORE BINOP V=%c%010o\n", PLUS(v), MAG(v));
     while (IsBinOp()) {
 		if (E) return AsmError(EA_UNDSYM);
         w = AtomicExpr();
@@ -1657,6 +1698,8 @@ Word Expr(void)
         if (OT)
         	AsmError(EA_OVRFLW);
     }
+	if (TRACEA)
+		fprintf(stderr, "-I-MIX:     EXPR V=%c%010o\n", PLUS(v), MAG(v));
     return v;
 }
 
@@ -1743,6 +1786,8 @@ Word Wvalue(void)
         w = Expr(); f = Fpart(05);
         v = WriteField(v, f, w);
     }
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     WVALUE=%c%010o\n", PLUS(v), MAG(v));
     return v;
 }
 
@@ -1948,13 +1993,53 @@ int Assemble(char *line)
 	}
     if (XH) {
         int xb = localSymIdx(LOCATION, 'B');
-        syms[xb-1].N = syms[XH].N;
-        syms[xb-1].D = syms[XH].D;
+        syms[xb-1].N = syms[XH-1].N;
+        syms[xb-1].D = syms[XH-1].D;
+        syms[XH-1].N = SM_NAN;
+        syms[XH-1].D = OFF;
         XH = 0;
     }
 Out:
     PrintList(needs, w, OLDP, line);
     return ON == E;
+}
+
+int FieldError(Byte F)
+{
+    fprintf(stderr, "-E-MIX: LOC=%04o F=%02o INVALID FIELD\n", P, F);
+    return Halt();
+}
+
+int GetV(Word M, Byte F, Word *ret)
+{
+    if (R(F) > 5 || L(F) > R(F))
+        return FieldError(F);
+    if (CheckMemRead(M)) {
+        return 1;
+    }
+    *ret = field(MemRead(M),F);
+    return 0;
+}
+
+int LinkLoad(void)
+{
+	int i;
+	Word a, na, w;
+	
+	fprintf(stderr, "-I-MIX: LINKLOAD %d\n", nload);
+	for (i = 0; i < nload; i += 2) {
+		a = LOAD[i]; w = LOAD[i + 1]; 
+		xprin(a); cprin('/'); xprin(w); cprin(':');
+		while (SM_MINUS1 != a) {
+			if (GetV(a, FIELD(0, 2), &na))
+				return AsmError(EA_LINKLD);
+			MemWrite(a, FIELD(0, 2), w);
+			space(); xprin(a); cprin('/'); xprin(w);
+			a = na;
+		}
+		nl();
+	}
+	return 0;
 }
 
 int Asm(const char *nm)
@@ -1970,7 +2055,7 @@ int Asm(const char *nm)
     }
     fprintf(stderr, "-I-MIX: PROCESSING %s\n", nm);
 
-    nsyms = 0;
+    nsyms = 0; nload = 0;
     InitLocalSyms();
 
     failed = 0;
@@ -1989,6 +2074,8 @@ int Asm(const char *nm)
             break;
         LNO++; ptr = fgets(line, MAX_LINE, fd);
     }
+    if (nload)
+    	LinkLoad();
     fclose(fd);
     fprintf(stderr, "-I-MIX: ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
     return 0;
@@ -2042,24 +2129,6 @@ void decode(Word C, Word F)
 	if (s)
 		*s = regnames[C & 07];
 }
-
-int FieldError(Byte F)
-{
-    fprintf(stderr, "-E-MIX: LOC=%04o F=%02o INVALID FIELD\n", P, F);
-    return Halt();
-}
-
-int GetV(Word M, Byte F, Word *ret)
-{
-    if (R(F) > 5 || L(F) > R(F))
-        return FieldError(F);
-    if (CheckMemRead(M)) {
-        return 1;
-    }
-    *ret = field(MemRead(M),F);
-    return 0;
-}
-
 
 void Status(Word P)
 {
