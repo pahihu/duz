@@ -132,6 +132,7 @@ Toggle TRACEIO, TRACEA;
 /* ============== S M  A R I T H M E T I C ================== */
 
 #define SM_MSB		(1U << 29)
+#define SM_NAN      (1U << 30)
 #define SM_SIGN		(1U << 31)
 #define SM_MASK(x)	((1U << (x)) - 1)
 #define IX_MASK		07777
@@ -149,6 +150,7 @@ Toggle TRACEIO, TRACEA;
 #define TRACK(x)    BYTE((x) >> 6)
 #define PLUS(x)     (SIGN(x) ? '-' : '+')
 #define ONOFF(x)    ((x) ? "ON ": "OFF")
+#define ASONOFF(x)  ((x) ? ON : OFF)
 
 Word i2w(int i)
 {	int sign;
@@ -1464,7 +1466,6 @@ int FindSym(char *S)
     return found;
 }
 
-Word PREVH[10];
 int IsLocalSym(char *s)
 {
     int ch1, ch2, ch3;
@@ -1475,14 +1476,11 @@ int IsLocalSym(char *s)
 
 int LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
-int DefineSym(char *S, Word w, Toggle defd)
+int DefineSymIdx(int found, char *S, Word w, Toggle defd)
 {
-    int found;
-
-    if (TRACEA)
-        fprintf(stderr, "-I-MIX:     DEFINE SYM '%s'\n", S);
-    LSYM = found = FindSym(S);
     if (found) {
+        if (NULL == S)
+            S = syms[found-1].S;
         // TAB ARG
         // D 	D	DUPSYM
         // D 	U	ASSERT
@@ -1503,6 +1501,7 @@ int DefineSym(char *S, Word w, Toggle defd)
         FREF = 'L';
         return 0;
     }
+    ASSERT(NULL != S);
     if (NSYMS == nsyms) {
         fprintf(stderr, "-E-MIX: SYMBOL TABLE FULL\n");
         return AsmError(EA_DUPSYM);
@@ -1518,6 +1517,56 @@ int DefineSym(char *S, Word w, Toggle defd)
     nsyms++;
     LSYM = nsyms;
     return 0;
+}
+
+int DefineSym(char *s, Word w, Toggle defd)
+{
+    int found;
+
+    if (TRACEA)
+        fprintf(stderr, "-I-MIX:     DEFINE SYM '%s'\n", S);
+    LSYM = found = FindSym(S);
+    return DefineSymIdx(found, S, w, defd);
+}
+
+void InitLocals(char typ)
+{
+    int i;
+
+    for (i = 0; i < 10; i++) {
+        S[i] = ' ';
+    }
+    S[10] = 0;
+    for (i = 0; i < 10; i++) {
+        S[0] = '0' + i;
+        S[1] = typ;
+        DefineSym(S, SM_NAN, OFF);
+    }
+}
+
+void InitLocalSyms(void)
+{
+    InitLocals('B');
+    InitLocals('H');
+    InitLocals('F');
+}
+
+int localSymIdx(char *s, char typ)
+{
+    int x;
+
+    ASSERT(IsLocalSym(s));
+
+    x = 0;
+    switch (typ) {
+    case 'B': x = 0; break;
+    case 'H': x = 10; break;
+    case 'F': x = 20; break;
+    default:
+        ASSERT(OFF);
+    }
+    /* result is like FindSym() */
+    return 1 + x + s[0] - '0';
 }
 
 Word AtomicExpr(void)
@@ -1543,27 +1592,20 @@ Word AtomicExpr(void)
         if (IsLocalSym(S)) {
             if ('H' == S[1])
                 return AsmError(EA_INVSYM);
-            if ('B' == S[1]) {
-                localB = ON;
-                S[1] = 'H';
-            }
+            localB = ASONOFF('B' == S[1]);
         }
         SX = found = FindSym(S);
         if (found--) {
             if (OFF == syms[found].D) {
                 if (localB)
-                    ASSERT(OFF);
+                    AsmError(EA_UNDBCK);
                 E = ON; /* FUTURE.REF */
             } else {
-                if (localB) {
-                    if (P == syms[found].N)
-                        return PREVH[S[0]-'0'];
-                }
                 ret = syms[found].N;
             }
         } else {
-            if (localB)
-                return AsmError(EA_UNDBCK);
+            if (IsLocalSym(S))
+                ASSERT(OFF);
             E = ON; /* UNDEFINED */
         }
     }
@@ -1779,6 +1821,29 @@ void DefineLiterals(void)
     }
 }
 
+int XH;
+void DefineLocationSym(Word w)
+{
+    int xb, xf;
+
+    if (IsLocalSym(LOCATION)) {
+        if ('H' != LOCATION[1])
+            AsmError(EA_INVSYM);
+        xb = localSymIdx(LOCATION, 'B');
+        XH = localSymIdx(LOCATION, 'H');
+        xf = localSymIdx(LOCATION, 'F');
+        syms[xb-1].N = syms[XH-1].N;
+        syms[xb-1].D = syms[XH-1].D;
+        if (SM_NAN != syms[xf-1].N) {
+            DefineSymIdx(xf, NULL, w, ON);
+            syms[xf-1].N = SM_NAN;
+            syms[xf-1].D = OFF;
+        }
+        DefineSymIdx(XH, NULL, w, ON);
+    } else
+        DefineSym(LOCATION, w, ON);
+}
+
 int Assemble(char *line)
 {
     Word w = 0, OLDP, A, I, F, C;
@@ -1815,6 +1880,7 @@ int Assemble(char *line)
     PLN = ADDRESS; CH = 1; NEXT();
     E = OFF; strcpy(EC, "    "); NE = 0; FREF = ' ';
     NEEDAWS = 0; NEEDP = 'P'; NEEDL = 0;
+    XH = 0;
 
 	OLDP = P;
     if ('*' == LOCATION[0]) {
@@ -1822,25 +1888,12 @@ int Assemble(char *line)
     }
     if (!strcmp(OP, "EQU ")) {
         w = Wvalue();
-        if (' ' != LOCATION[0]) {
-            /* TBD: also below */
-            if (IsLocalSym(LOCATION)) {
-                if ('H' != LOCATION[1])
-                    AsmError(EA_INVSYM);
-                found = FindSym(LOCATION);
-                if (found) {
-                    PREVH[LOCATION[1]-'0'] = syms[found-1].N;
-                    LOCATION[1] = 'F';
-                    /* TBD: resolve 2F */
-                }
-            }
-            DefineSym(LOCATION, w, ON);
-        }
+        if (' ' != LOCATION[0])
+            DefineLocationSym(w);
         NEEDAWS = 'W'; NEEDP = 0;
     } else {
-        if (' ' != LOCATION[0]) {
-            DefineSym(LOCATION, P, ON);
-        }
+        if (' ' != LOCATION[0])
+            DefineLocationSym(P);
         found = FindOp();
         if (found--) {
             C = opcodes[found].c0de; 
@@ -1893,6 +1946,12 @@ int Assemble(char *line)
 	    	fprintf(stderr, "-I-MIX:     EXTRA OP ('%c',%d)\n", CH, CH);
     	AsmError(EA_XTRAOP);
 	}
+    if (XH) {
+        int xb = localSymIdx(LOCATION, 'B');
+        syms[xb-1].N = syms[XH].N;
+        syms[xb-1].D = syms[XH].D;
+        XH = 0;
+    }
 Out:
     PrintList(needs, w, OLDP, line);
     return ON == E;
@@ -1901,7 +1960,7 @@ Out:
 int Asm(const char *nm)
 {
     char *ptr, line[MAX_LINE+1];
-    int i, n, failed;
+    int n, failed;
     FILE *fd;
 
     fd = fopen(nm, "rt");
@@ -1911,10 +1970,11 @@ int Asm(const char *nm)
     }
     fprintf(stderr, "-I-MIX: PROCESSING %s\n", nm);
 
+    nsyms = 0;
+    InitLocalSyms();
+
     failed = 0;
     P = 0; OPEND = OFF;
-    for (i = 0; i < 10; i++)
-        PREVH[i] = smNEG(1);
 
     LNO = 1; ptr = fgets(line, MAX_LINE, fd);
     while (ptr && !feof(fd)) {
