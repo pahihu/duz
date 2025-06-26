@@ -316,7 +316,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	mx = SIGN(a) + MAG(mx);
     
 	*pquo = mx;
-	*prem = ma;
+	if (prem) *prem = ma;
 }
 
 
@@ -1352,7 +1352,6 @@ int  SX;            /* TOK_SYM FindSym() result */
 
 #define ENSURE(ch)  \
     if (ch != CH) { \
-        fprintf(stderr, "-E-MIX: LINE=%04d %c EXPECTED\n", LNO, CH); \
         return AsmError(EA_INVCHR); \
     } \
     NEXT();
@@ -1446,17 +1445,24 @@ int GetV(Word M, Byte F, Word *ret)
 int LinkLoad(Word adr, Word w)
 {
 	Word nadr;
+	int ret = 0;
 	
     fprintf(stderr, "-I-MIX: LINKLOAD ");
 	while (SM_MINUS1 != adr) {
-	    if (GetV(adr, FIELD(0, 2), &nadr))
-		    return 1;
+	    if (GetV(adr, FIELD(0, 2), &nadr)) {
+		    ret = 1;
+		    break;
+	    }
 	    MemWrite(adr, FIELD(0, 2), w);
 		space(); xprin(adr); cprin('/'); xprin(w);
+		if (adr == nadr) {
+			ret = 1;
+			break;
+		}
 		adr = nadr;
 	}
 	nl();
-	return 0;
+	return ret;
 }
 
 
@@ -1760,6 +1766,8 @@ Word Expr(void)
 {
     Word v = 0, w = 0;
 
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     EXPR '%c%s'\n", CH, PLN);
     if (E) return 0;
     if ('+' == CH || '-' == CH) {
 	    int sign = CH;
@@ -1773,11 +1781,15 @@ Word Expr(void)
         v = AtomicExpr();
     }
 	if (TRACEA)
-		fprintf(stderr, "-I-MIX:     EXPR BEFORE BINOP V=%c%010o\n", PLUS(v), MAG(v));
+		fprintf(stderr, "-I-MIX:     V=%c%010o\n", PLUS(v), MAG(v));
     while (IsBinOp()) {
+		if (TRACEA)
+			fprintf(stderr, "-I-MIX:     B=%c\n", B);
 		if (E) return AsmError(EA_UNDSYM);
         w = AtomicExpr();
         if (E) return AsmError(EA_MISSOP);
+		if (TRACEA)
+			fprintf(stderr, "-I-MIX:     W=%c%010o\n", PLUS(w), MAG(w));
         OT = OFF;
         switch (B) {
         case '+': v = smADD(v, w); break;
@@ -1789,6 +1801,8 @@ Word Expr(void)
         default:
             break;
         }
+		if (TRACEA)
+			fprintf(stderr, "-I-MIX:     AFTER V=%c%010o\n", PLUS(v), MAG(v));
         if (OT)
         	AsmError(EA_OVRFLW);
     }
@@ -1871,15 +1885,25 @@ Word Wvalue(void)
     Word v = 0, w = 0;
     int f;
 
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     WVALUE\n");
     if (E) return 0;
     w = Expr();
     f = Fpart(05);
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     W=%c%010o F=%o\n", PLUS(w), MAG(w), f);
     if (E) return 0;
     v = WriteField(v, f, w);
+    if (TRACEA)
+    	fprintf(stderr, "-I-MIX:     V=%c%010o\n", PLUS(v), MAG(v));
     while (!E && ',' == CH) {
         NEXT();
         w = Expr(); f = Fpart(05);
+	    if (TRACEA)
+	    	fprintf(stderr, "-I-MIX:     W=%c%010o F=%o\n", PLUS(w), MAG(w), f);
         v = WriteField(v, f, w);
+	    if (TRACEA)
+	    	fprintf(stderr, "-I-MIX:     V=%c%010o\n", PLUS(v), MAG(v));
     }
     if (TRACEA)
     	fprintf(stderr, "-I-MIX:     WVALUE=%c%010o\n", PLUS(v), MAG(v));
