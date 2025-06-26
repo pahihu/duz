@@ -19,6 +19,7 @@
  *
  *  History:
  *  ========
+ *  250626AP    local symbols, LNKLD card
  *  250624AP    local symbols skeleton
  *  250623AP    literal constants
  * 	250622AP	TT and PT fixes, for shift M should be non-negative
@@ -93,6 +94,8 @@ char *strtoupper(char *s)
 }
 
 #define RANGE(x,lo,hi)  (lo <= (x) && (x) <= hi)
+#define MIN(x,y)        ((x) < (y) ? (x) : (y))
+#define MAX(x,y)        ((x) > (y) ? (x) : (y))
 
 
 typedef unsigned int Word;
@@ -109,6 +112,7 @@ Toggle OT;
 enum {LESS, EQUAL, GREATER} CI;
 Toggle TRANS;
 char TRANSNM[5+1];
+Toggle LNKLD;
 
 FILE *LPT;
 unsigned Tyme, IdleTyme, InstCount, TraceCount;
@@ -221,6 +225,7 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
 	
+fprintf(stderr,"INP: A=%o X=%o\n", a, x);
 	for (i = 0; i < shmt; i++) {
 		sav = MSB(a);
 		a = MAG(a << 1);
@@ -230,6 +235,7 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 		if (circ && sav)
 			x++;
 	}
+fprintf(stderr,"OUT: A=%o X=%o\n", a, x);
 	*pa = a;
 	if (px) *px = x;
 	return a;
@@ -296,6 +302,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	Word ma, mx, mv;
 	int i, d;
 	
+fprintf(stderr,"-I-MIX: A=%d X=%d V=%d\n", w2i(a), w2i(x), w2i(v));
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
 	for (i = 0; i < 30; i++) {
 		d = 0;
@@ -308,6 +315,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 		ma += SM_SIGN;
 
 	mx = SIGN(a) + MAG(mx);
+fprintf(stderr,"-I-MIX: MA=%d MX=%d\n", w2i(ma), w2i(mx));
 	*pquo = mx;
 	*prem = ma;
 }
@@ -365,9 +373,20 @@ void xprint(Word w)
     xprin(w); space();
 }
 
+void dprin(int d)
+{
+    fprintf(LPT, "%d ", d);
+}
+
 void cprin(int ch)
 {
 	fprintf(LPT, "%c", ch);
+}
+
+void prin(char *s)
+{
+    while (*s)
+        cprin(*s++);
 }
 
 
@@ -470,10 +489,10 @@ Word WriteField(Word v, int f, Word w)
 		mask += SM_SIGN;
 		vv += SIGN(w);
 	}
-	return vv + (mask & v);
+	return vv + (~mask & v);
 }
 
-void MemWrite(Word a,int f,Word w)
+void MemWrite(Word a, int f, Word w)
 {
 	Tyme++; TIMER++;
     a = MAG(a);
@@ -1390,6 +1409,58 @@ int nload;
 Toggle OPEND;       /* "END" ? */
 Word START;         /* start addr */
 
+void PunchLinkLoad(FILE *fout)
+{
+    int i, j, n;
+
+    // LNKLDn  12341234...
+    for (i = 0; i < nload; i += 18) {
+        n = MIN(nload - i, 18);
+        fprintf(fout, "LNKLD%d  ", n / 2);
+        for (j = 0; j < 18; j += 2) {
+            if (j < n)
+                fprintf(fout, "%04o%04o", LOAD[i + j], LOAD[i + j + 1]);
+            else
+                fprintf(fout, "        ");
+        }
+        fprintf(fout, "\n");
+    }
+}
+
+int FieldError(Byte F)
+{
+    fprintf(stderr, "-E-MIX: LOC=%04o F=%02o INVALID FIELD\n", P, F);
+    return Halt();
+}
+
+int GetV(Word M, Byte F, Word *ret)
+{
+    if (R(F) > 5 || L(F) > R(F))
+        return FieldError(F);
+    if (CheckMemRead(M)) {
+        return 1;
+    }
+    *ret = field(MemRead(M),F);
+    return 0;
+}
+
+int LinkLoad(Word adr, Word w)
+{
+	Word nadr;
+	
+    fprintf(stderr, "-I-MIX: LINKLOAD ");
+	while (SM_MINUS1 != adr) {
+	    if (GetV(adr, FIELD(0, 2), &nadr))
+		    return 1;
+	    MemWrite(adr, FIELD(0, 2), w);
+		space(); xprin(adr); cprin('/'); xprin(w);
+		adr = nadr;
+	}
+	nl();
+	return 0;
+}
+
+
 
 /* ==================== A S S E M B L E R =================== */
 
@@ -1525,13 +1596,14 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
         syms[found-1].N = w;
         syms[found-1].D = ON;
         if (SM_MINUS1 != adr) {
-			fprintf(stderr, "LOAD %c%04o %c%04o\n", PLUS(adr), MAG(adr), PLUS(w), MAG(w));
 	        if (nload >= NLOAD) {
 		        fprintf(stderr, "-E-MIX: LOADER TABLE FULL\n");
 		        return AsmError(EA_DUPSYM);
 	        }
 			LOAD[nload++] = adr;
 			LOAD[nload++] = w;
+            if (LinkLoad(adr, w))
+                AsmError(EA_LINKLD);
 		}
         return 0;
     }
@@ -1546,7 +1618,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
     }
     strcpy(syms[nsyms].S, S);
     syms[nsyms].N = w;
-    syms[nsyms].A = smNEG(1);
+    syms[nsyms].A = SM_MINUS1;
     syms[nsyms].D = defd;
     nsyms++;
     LSYM = nsyms;
@@ -1574,8 +1646,31 @@ void InitLocals(char typ)
     for (i = 0; i < 10; i++) {
         S[0] = '0' + i;
         S[1] = typ;
-        DefineSym(S, SM_NAN, OFF);
+        DefineSym(S, 'B' == typ ? SM_NAN : SM_MINUS1, OFF);
     }
+}
+
+int ShowLocal(int i)
+{
+    if (syms[i].D) {
+        space(); dprin(i); prin(syms[i].S); space();
+        wprint(syms[i].N);
+    }
+    return syms[i].D;
+}
+
+void ShowLocalSyms(char *msg)
+{
+    int i, d;
+
+    fprintf(stderr, "-I-MIX: **** LOCALS %s ****\n", msg);
+    for (i = 0; i < 10; i++) {
+        d  = ShowLocal(i);
+        d += ShowLocal(i + 10);
+        d += ShowLocal(i + 20);
+        if (d) nl();
+    }
+    fprintf(stderr, "-I-MIX: ****************\n");
 }
 
 void InitLocalSyms(void)
@@ -1631,13 +1726,13 @@ Word AtomicExpr(void)
             localB = ASONOFF('B' == S[1]);
         }
         SX = found = FindSym(S);
-        if (found--) {
-            if (OFF == syms[found].D) {
+        if (found) {
+            if (OFF == syms[found-1].D) {
                 if (localB)
                     AsmError(EA_UNDBCK);
                 E = ON; /* FUTURE.REF */
             } else {
-                ret = syms[found].N;
+                ret = syms[found-1].N;
             }
         } else {
             if (IsLocalSym(S))
@@ -1723,7 +1818,7 @@ Word Apart(void)
 	            /* TBD */
 	            if (!DefineSym(LBEG, P, OFF)) {
 	            	syms[LSYM-1].A = v;
-                    v = smNEG(1);
+                    v = SM_MINUS1;
                 }
                 FREF = '/';
 	        } else
@@ -1737,10 +1832,11 @@ Word Apart(void)
                 syms[SX-1].N = P;
             } else {
                 /* future.ref */
-                v = smNEG(1);
+                v = SM_MINUS1;
                 DefineSym(S, P, OFF);
             }
-            FREF = '/';
+            if (!IsLocalSym(S))
+                FREF = '/';
         }
     }
     return v;
@@ -1877,11 +1973,13 @@ void DefineLocationSym(Word w)
         xb = localSymIdx(LOCATION, 'B');
         XH = localSymIdx(LOCATION, 'H');
         xf = localSymIdx(LOCATION, 'F');
-        syms[xb-1].N = syms[XH-1].N;
-        syms[xb-1].D = syms[XH-1].D;
-        if (SM_NAN != syms[xf-1].N) {
+        if (OFF == syms[xb-1].D) {
+            syms[xb-1].N = syms[XH-1].N;
+            syms[xb-1].D = syms[XH-1].D;
+        }
+        if (SM_MINUS1 != syms[xf-1].N) {
             DefineSymIdx(xf, NULL, w, ON);
-            syms[xf-1].N = SM_NAN;
+            syms[xf-1].N = SM_MINUS1;
             syms[xf-1].D = OFF;
         }
         DefineSymIdx(XH, NULL, w, ON);
@@ -1920,6 +2018,7 @@ int Assemble(char *line)
         fprintf(stderr, "-I-MIX:     LOCATION='%s'\n", LOCATION);
         fprintf(stderr, "-I-MIX:     OP='%s'\n", OP);
         fprintf(stderr, "-I-MIX:     ADDRESS='%s'\n", ADDRESS);
+        ShowLocalSyms("BEFORE");
     }
     
     PLN = ADDRESS; CH = 1; NEXT();
@@ -1995,51 +2094,15 @@ int Assemble(char *line)
         int xb = localSymIdx(LOCATION, 'B');
         syms[xb-1].N = syms[XH-1].N;
         syms[xb-1].D = syms[XH-1].D;
-        syms[XH-1].N = SM_NAN;
+        syms[XH-1].N = SM_MINUS1;
         syms[XH-1].D = OFF;
         XH = 0;
     }
 Out:
+    if (TRACEA)
+        ShowLocalSyms("AFTER");
     PrintList(needs, w, OLDP, line);
     return ON == E;
-}
-
-int FieldError(Byte F)
-{
-    fprintf(stderr, "-E-MIX: LOC=%04o F=%02o INVALID FIELD\n", P, F);
-    return Halt();
-}
-
-int GetV(Word M, Byte F, Word *ret)
-{
-    if (R(F) > 5 || L(F) > R(F))
-        return FieldError(F);
-    if (CheckMemRead(M)) {
-        return 1;
-    }
-    *ret = field(MemRead(M),F);
-    return 0;
-}
-
-int LinkLoad(void)
-{
-	int i;
-	Word a, na, w;
-	
-	fprintf(stderr, "-I-MIX: LINKLOAD %d\n", nload);
-	for (i = 0; i < nload; i += 2) {
-		a = LOAD[i]; w = LOAD[i + 1]; 
-		xprin(a); cprin('/'); xprin(w); cprin(':');
-		while (SM_MINUS1 != a) {
-			if (GetV(a, FIELD(0, 2), &na))
-				return AsmError(EA_LINKLD);
-			MemWrite(a, FIELD(0, 2), w);
-			space(); xprin(a); cprin('/'); xprin(w);
-			a = na;
-		}
-		nl();
-	}
-	return 0;
 }
 
 int Asm(const char *nm)
@@ -2074,8 +2137,6 @@ int Asm(const char *nm)
             break;
         LNO++; ptr = fgets(line, MAX_LINE, fd);
     }
-    if (nload)
-    	LinkLoad();
     fclose(fd);
     fprintf(stderr, "-I-MIX: ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
     return 0;
@@ -2548,6 +2609,7 @@ void Init(void)
 	STATE = S_HALT; Halt();
     TRACE = OFF; TRACEIO = OFF; TraceCount = 0; TRACEA = OFF;
     TRANS = OFF;
+    LNKLD = OFF;
     for (i = 0; i < sizeof(TRANSNM); i++) {
         TRANSNM[i] = 0;
     }
@@ -2598,13 +2660,14 @@ void Finish(void)
 
 void Usage(void)
 {
-	fprintf(stderr, "usage: mix [-a file][-f][-g dev][-t aio]][-x name]\n");
+	fprintf(stderr, "usage: mix [-a file][-f][-g dev][-l][-t aio]][-x name]\n");
     fprintf(stderr, "options:\n");
     fprintf(stderr, "    -a file    assemble file\n");
     fprintf(stderr, "    -f         free fmt assembler input\n");
     fprintf(stderr, "    -g unit    push GO button on unit\n");
+    fprintf(stderr, "    -l         punch LNKLD cards\n");
     fprintf(stderr, "    -t aio     enable tracing: Asm,Io,Op\n");
-    fprintf(stderr, "    -x name    print nonzero locations in TRANS fmt\n");
+    fprintf(stderr, "    -x name    punch nonzero locations in TRANS fmt\n");
 	exit(1);
 }
 
@@ -2696,12 +2759,28 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
     LPT = LPTSAV;
 }
 
+void PunchTrans(void)
+{
+    char buf[16];
+    FILE *fout;
+
+    strcpy(buf, TRANSNM);
+    strcat(buf, ".tra");
+    strtolower(buf);
+    if ((fout = fopen(buf, TXT_APPEND))) {
+        Stats(fout, 7, 1);
+        if (LNKLD)
+            PunchLinkLoad(fout);
+        fclose(fout);
+    } else
+        fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", buf);
+}
+
 
 int main(int argc, char*argv[])
 {
 	int i, j, u;
-	char *arg, *ASMIN, buf[16];
-    FILE *fout;
+	char *arg, *ASMIN;
     Toggle GO;
 
     GO = OFF; ASMIN = NULL; u = DEV_CR;
@@ -2726,6 +2805,9 @@ int main(int argc, char*argv[])
 				continue;
 			}
 			break;
+        case 'l':
+            LNKLD = ON;
+            break;
 		case 't':
 			if (i + 1 < argc) {
 				arg = argv[++i];
@@ -2755,8 +2837,9 @@ int main(int argc, char*argv[])
 
     if (ASMIN || GO) {
         if (ASMIN) {
-	        if (Asm(ASMIN))
-	        	return 1;
+	        Asm(ASMIN);
+            if (TRANS)
+                PunchTrans();
             Run(START);
         }
         else {
@@ -2764,16 +2847,6 @@ int main(int argc, char*argv[])
 	            Go(u);
         }
         Stats(stderr, 4, 0);
-    }
-    if (TRANS) {
-        strcpy(buf, TRANSNM);
-        strcat(buf, ".tra");
-        strtolower(buf);
-        if ((fout = fopen(buf, TXT_APPEND))) {
-            Stats(fout, 7, 1);
-            fclose(fout);
-        } else
-            fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", buf);
     }
     Finish();
 

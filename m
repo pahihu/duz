@@ -2,7 +2,7 @@
 make
 rm -f printer
 rm -f teste.tra
-./mix -t a -a example.mix
+./mix -t o -a primes.mix 2>&1 | tee mix.log
 exit 0
 cat cardload.dek hello.dek >reader
 # cat cardload.dek primes.dek >reader
