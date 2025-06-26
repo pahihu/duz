@@ -225,7 +225,6 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
 	
-fprintf(stderr,"INP: A=%o X=%o\n", a, x);
 	for (i = 0; i < shmt; i++) {
 		sav = MSB(a);
 		a = MAG(a << 1);
@@ -235,7 +234,6 @@ fprintf(stderr,"INP: A=%o X=%o\n", a, x);
 		if (circ && sav)
 			x++;
 	}
-fprintf(stderr,"OUT: A=%o X=%o\n", a, x);
 	*pa = a;
 	if (px) *px = x;
 	return a;
@@ -302,8 +300,8 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	Word ma, mx, mv;
 	int i, d;
 	
-fprintf(stderr,"-I-MIX: A=%d X=%d V=%d\n", w2i(a), w2i(x), w2i(v));
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
+    smSLAX(&ma, &mx, ma, mx, 1, 0);
 	for (i = 0; i < 30; i++) {
 		d = 0;
 		if (ma >= mv) {
@@ -311,11 +309,12 @@ fprintf(stderr,"-I-MIX: A=%d X=%d V=%d\n", w2i(a), w2i(x), w2i(v));
 		}
 		smSLAX(&ma, &mx, ma, mx, 1, 0); mx += d;
 	}
+    ma >>= 1;
 	if (SIGN(a) != SIGN(v))
 		ma += SM_SIGN;
 
 	mx = SIGN(a) + MAG(mx);
-fprintf(stderr,"-I-MIX: MA=%d MX=%d\n", w2i(ma), w2i(mx));
+    
 	*pquo = mx;
 	*prem = ma;
 }
@@ -2264,7 +2263,7 @@ int CheckIdx(int x, Toggle cy)
     if (OFF != cy) {
         fprintf(stderr,"-E-MIX: LOC=%04o RI%d OVERFLOW\n", P, x);
 		return Halt();
-	} else if (~IX_MASK & MAG(reg[x])) {
+	} else if (~(SM_SIGN + IX_MASK) & MAG(reg[x])) {
 		fprintf(stderr,"-E-MIX: LOC=%04o RI%d UNDEFINED\n", P, x);
 		return Halt();
 	}
@@ -2341,7 +2340,7 @@ int Step(void)
         return Halt();
     }
 	M = I ? smADD(A, reg[I]) : A;
-    if (~IX_MASK & M) {
+    if (~(SM_SIGN + IX_MASK) & M) {
         fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o ILLEGAL ADDRESS\n", P, PLUS(M), MAG(M));
         return Halt();
     }
