@@ -2302,7 +2302,7 @@ Word ConvertChar(Word *pw, Word a)
 	int i, d, scale;
 	Word w;
 	
-	w = *pw; scale = 0;
+	w = 0; scale = 0;
 	for (i = 0; i < 5; i++) {
 		d = 30 + (a % 10); a /= 10;
 		w |= (d << scale);
@@ -2384,7 +2384,7 @@ int Step(void)
 				rA = signA + ToNum(rA, rX);
 				break;
 			case 1: /*CHAR*/
-				ToChar(&rA, &rX, rA);
+				ToChar(&rA, &rX, MAG(rA));
 				rA += signA; rX += signX;
 				break;
 			case 2: /*HLT*/
