@@ -22,6 +22,7 @@
  *  250627AP    wait for I/O completion on HLT
  *              asm error handling
  *              fixed LNKLD card
+ *              fixed smMPY, smDIV, simplified ENTr, fixed shift
  *  250626AP    fixed smDIV, local symbols, LNKLD card
  *  250624AP    local symbols skeleton
  *  250623AP    literal constants
@@ -228,6 +229,7 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
 	
+    shmt = shmt % 60;
 	for (i = 0; i < shmt; i++) {
 		sav = MSB(a);
 		a = MAG(a << 1);
@@ -246,6 +248,7 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
 	
+    shmt = shmt % 60;
 	for (i = 0; i < shmt; i++) {
 		sav = 1 & x;
 		x >>= 1;
@@ -256,7 +259,7 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 			a += SM_MSB;
 	}
 	*pa = a;
-	*px = x;
+	if (px) *px = x;
 	return a;
 }
 
@@ -279,7 +282,7 @@ void smMPY(Word *pa, Word *px, Word a, Word x)
 	mid1 = HI(ma) * LO(mx);
     mid2 = LO(ma) * HI(mx);
 	hi   = HI(ma) * HI(mx);
-	
+
 	lo = smADD(lo, LO(mid1) << 15);
 	if (CY) cy++;
     lo = smADD(lo, LO(mid2) << 15);
@@ -287,8 +290,8 @@ void smMPY(Word *pa, Word *px, Word a, Word x)
         cy++;
         hi = smADD(hi, cy);
     }
-	hi = smADD(hi, HI(mid1) >> 15);
-	hi = smADD(hi, HI(mid2) >> 15);
+	hi = smADD(hi, HI(mid1));
+	hi = smADD(hi, HI(mid2));
 	if (SIGN(a) != SIGN(x)) {
 		hi += SM_SIGN;
 		lo += SM_SIGN;
@@ -297,12 +300,19 @@ void smMPY(Word *pa, Word *px, Word a, Word x)
 	*px = lo;
 }
 
+#define UNDEF	((SM_SIGN + IX_MASK) & rand())
+
 /* sign is a */
 void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 {
 	Word ma, mx, mv;
 	int i, d;
 	
+	if (!MAG(v) || MAG(a) >= MAG(v)) {
+	    OT = ON;
+		*pquo = UNDEF; *prem = UNDEF;
+        return;
+	}
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
     smSLAX(&ma, &mx, ma, mx, 1, 0);
 	for (i = 0; i < 30; i++) {
@@ -313,10 +323,11 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 		smSLAX(&ma, &mx, ma, mx, 1, 0); mx += d;
 	}
     ma >>= 1;
+    /* rX: ma - rem, rA: mx - quo */
 	if (SIGN(a) != SIGN(v))
-		ma += SM_SIGN;
+		mx += SM_SIGN;
 
-	mx = SIGN(a) + MAG(mx);
+	ma += SIGN(a);
     
 	*pquo = mx;
 	if (prem) *prem = ma;
@@ -2254,7 +2265,7 @@ void decode(Word C, Word F)
 
 void Status(Word P)
 {
-	static char *sot = " X", *sci = "LEG", *ssta = "HWN ";
+	static char *sot = " X", *sci = "LEG", *ssta = "HSWN ";
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
 	
@@ -2316,8 +2327,6 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 	fprintf(stderr, "%c %c %07u\n", sot[OT], sci[CI], Tyme);
 }
 
-
-#define UNDEF	rand()
 
 
 int CheckIdx(int x, Toggle cy)
@@ -2430,11 +2439,7 @@ int Step(void)
 	case 4: /*DIV*/
         if (GetV(M, F, &w))
             return 1;
-		if (!MAG(w) || MAG(rA) >= MAG(w)) {
-			OT = ON;
-			rA = UNDEF; rX = UNDEF;
-		} else
-			smDIV(&rA, &rX, rA, rX, w);
+		smDIV(&rA, &rX, rA, rX, w);
 		Tyme += 11; TIMER += 11;
 		break;
 	case 5:
@@ -2614,11 +2619,9 @@ int Step(void)
 			break;
 		case 2: /*ENTr*/
 			reg[x] = M;
-			if (!MAG(M))
-				reg[x] += SIGN(IR);
 			break;
 		case 3: /*ENNr*/
-			reg[x] = smNEG(M);
+            reg[x] = smNEG(M);
 			break;
 		default:
 			return FieldError(F);
