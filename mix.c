@@ -2187,18 +2187,16 @@ int Asm(const char *nm)
     failed = 0;
     P = 0; OPEND = OFF;
 
-    LNO = 1; ptr = fgets(line, MAX_LINE, fd);
+    LNO = 1; ptr = fgets(line, MAX_LINE+1, fd);
     while (ptr && !feof(fd)) {
         n = strlen(line);
         while (n && IsCrLf(line[n-1]))
             n--;
         line[n] = 0;
-        if (Assemble(line)) {
-            failed = 1;
-        }
+        failed += n ? Assemble(line) : 0;
         if (OPEND)
             break;
-        LNO++; ptr = fgets(line, MAX_LINE, fd);
+        LNO++; ptr = fgets(line, MAX_LINE+1, fd);
     }
     fclose(fd);
     fprintf(stderr, "-I-MIX: ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
