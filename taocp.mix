@@ -25,11 +25,13 @@ CDIV1      CON  3
 DIVA2      CON  -0
 DIVX2      CON  1235(0:2),0(3:3),3(4:4),1(5:5)
 CDIV2      CON  -0(0:3),2(4:4),0(5:5)
+DIVX22     CON  1234(0:2),0(3:3),3(4:4),1(5:5)
 SAVA       ORIG *+1
 SHA        CON  1(1:1),2(2:2),3(3:3),4(4:4),5(5:5)
 SHX        CON  -6(0:1),7(2:2),8(3:3),9(4:4),10(5:5)
 NUMA       CON  -0(0:2),31(3:3),32(4:4),39(5:5)
 NUMX       CON  37(1:1),57(2:2),47(3:3),30(4:4),30(5:5)
+LFIELD     CON  5(1:1),1(2:2),200(3:4),15(5:5)
            ORIG 1000
 * OP CODING
            LDA  2000,2(0:3)
@@ -75,6 +77,9 @@ START      LDA  PATLD
            LDA  DIVA2
            LDX  DIVX2
            DIV  CDIV2
+           LDA  DIVA2
+           LDX  DIVX22
+           DIV  CDIV2
 * ENTA
            ENTA 0
            ENTA -0
@@ -100,5 +105,11 @@ START      LDA  PATLD
            LDA  1000
            INCA 1
            STA  1000
+* LOAD FIELD
+           LDAN LFIELD
+           LD2N LFIELD(3:4)
+           LDX  LFIELD(1:3)
+*          LD6  LFIELD
+           LDXN LFIELD(0:0)
            HLT
            END  START

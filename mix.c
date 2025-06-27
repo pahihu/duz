@@ -579,7 +579,7 @@ IOC
 /*		                     1         2         3         4         5         6	 */
 /*		           0123456789012345678901234567890123456789012345678901234567890123*/
 char    m2a[64] = " ABCDEFGHI~JKLMNOPQR[#STUVWXYZ0123456789.,()+-*/=$<>@;:'        ";
-char cr_m2a[64] = " ABCDEFGHI~JKLMNOPQR  STUVWXYZ0123456789.,()+-*/                ";
+char cr_m2a[64] = " ABCDEFGHI~JKLMNOPQR  STUVWXYZ0123456789.,()+-*/=               ";
 Byte a2m[256], cr_a2m[256];
 
 
