@@ -1,0 +1,17 @@
+*          R.SITES
+START      ORIG 3000
+           LDA  (1,2)
+           JMP  3B
+           JMP  $
+X          ENTA 3
+X          ENTA 4
+           LDA  XYZ(3:2)
+           CON  12345678901
+           LDA  5+(1:2)
+           J7NZ LABEL
+           ORIG 4002
+           MOVE XYZ(327)
+           LDA  XYZ(J)
+           ENTA 5123456789+5123456789
+           LDA  2(1:1)3
+LOC        END  START

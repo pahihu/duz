@@ -1,8 +1,9 @@
 #!/bin/bash
 make
 rm -f printer
-rm -f teste.tra
-./mix -t o -a primes.mix 2>&1 | tee mix.log
+rm -f *.tra
+# ./mix -a primes2.mix -x prime 2>&1 | tee mix.log
+./mix -t o -a testrs.mix 2>&1 | tee mix.log
 exit 0
 cat cardload.dek hello.dek >reader
 # cat cardload.dek primes.dek >reader
