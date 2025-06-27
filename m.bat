@@ -1,10 +1,10 @@
 mingw32-make
 del/q printer
 del/q teste.tra
-.\mix.exe -a testap.mix >mix.log 2>&1
+.\mix.exe -t o -a testdk.mix >mix.log 2>&1
 goto end
-copy /y cardload.dek+hello.dek reader
+rem copy /y cardload.dek+prime.tra reader
 rem copy /y cardload.dek+primes.dek reader
-.\mix.exe -t io -g 16 -x tester >mix.log 2>&1
+.\mix.exe -t io -g 16 >mix.log 2>&1
 :end
 

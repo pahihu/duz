@@ -310,7 +310,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	
 	if (!MAG(v) || MAG(a) >= MAG(v)) {
 	    OT = ON;
-		*pquo = UNDEF; *prem = UNDEF;
+		*pquo = UNDEF; if (prem) *prem = UNDEF;
         return;
 	}
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
