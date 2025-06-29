@@ -19,11 +19,15 @@
  *  Instruction extensions
  *  ======================
  *  - standard: 1.3.1 pp.120, 1.3.2 pp.141
- *  - binary: AND OR XOR NEG XCH SLB SRB JrE JrO (Ex.2.5-28 pp.454) [f]
- *  - float: FLOT FIX FADD FSUB FMUL FDIV FCMP 4.2.x
- *  - interrupt: INT Ex.1.4.4-18 pp.224 [d]
- *  - master: XEQ CPMr Ex.1.3.1-25 pp.139 (solution pp.504) [cgh]
- *  - double/indirect-indexing: Ex.2.2.2-5 (solution pp.536) [b]
+ *  - binary: AND OR XOR NEG XCH SLB SRB JrE JrO (Ex.2.5-28 pp.455) [f]
+ *  - float: FLOT FIX FADD FSUB FMUL FDIV FCMP Vol.2 4.2 pp.214
+ *		FLOT pp.221
+ *		FIX	 pp.224
+ *		FCMP Ex.4.2.2-17 pp.244 (solution pp.615)
+ *		FIX subroutine Ex.4.2.1-14 (solution pp.612)
+ *  - interrupt: INT Ex.1.4.4-18 pp.228 [d]
+ *  - master: XEQ CPMr Ex.1.3.1-25 pp.139 (solution pp.510) [cgh]
+ *  - double/indirect-indexing: Ex.2.2.2-5 (solution pp.541) [b]
  *  - real-time clock [e]
  *  
  *
@@ -36,6 +40,7 @@
  *              added F check for I/O ops
  *              added Mixmaster: 32KW memory + 64 I/O devices
  *              added double/indirect-addressing
+ *				added interrupt skeleton
  *  250628AP    fixed DEV_TT handling
  *              fixed JNE 'F' error
  *              report undefined syms
@@ -145,7 +150,9 @@ unsigned MAX_MEM;
 #define TRACE       mem[MAX_MEM+1]
 #define TIMER       mem[MAX_MEM+2]
 
-Word reg[10], *mem, P;
+#define	RTC			ctlmem[10]
+
+Word reg[10], *mem, *ctlmem, P;
 Toggle OT;
 enum {LESS, EQUAL, GREATER} CI;
 Toggle TRANS, LNKLD, DUMP, STAN;
@@ -153,7 +160,7 @@ char TRANSNM[5+1];
 
 FILE *LPT;
 unsigned Tyme, IdleTyme, InstCount, TraceCount;
-unsigned short *freq;
+unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 Toggle CY;
 Toggle TRACEOP, TRACEIO, TRACEA;
@@ -498,6 +505,16 @@ void WaitFor(unsigned evt)
     STATE = S_WAIT;
 }
 
+int IsNormal(void)
+{
+	return S_NORMAL == STATE;
+}
+
+int IsControl(void)
+{
+	return S_CONTROL == STATE;
+}
+
 int Waiting(void)
 {
     return S_WAIT == STATE;
@@ -506,6 +523,40 @@ int Waiting(void)
 int Halted(void)
 {
     return S_HALT == STATE;
+}
+
+void SaveSTATE(void)
+{
+	int i;
+	Word w;
+	
+	ASSERT(IsNormal());
+	
+	for (i = 0; i < 8; i++)
+		ctlmem[i + 1] = reg[i];
+
+	w  = P;  w <<= 6;
+	w += FIELD(OT,CI); w <<= 12;
+	w += rJ;
+	ctlmem[1] = w;
+}
+
+void RestoreSTATE(void)
+{
+	int i;
+	Word w;
+	Byte f;
+	
+	ASSERT(IsControl());
+	
+	w  = ctlmem[1];
+	rJ = A_MASK & w; w >>= 12;
+	f  = BYTE(w); w >>= 6;
+	OT = L(f); CI = R(f);
+	P  = A_MASK & w;
+
+	for (i = 0; i < 8; i++)
+		reg[i] = ctlmem[i + 1];
 }
 
 
@@ -568,8 +619,10 @@ int CheckAddr(Word a, char *msg)
 
 Word MemRead(Word a)
 {
+	ASSERT(IsNormal() || IsControl());
+	
 	Tyme++; TIMER++;
-	return mem[MAG(a)];
+	return IsNormal() ? mem[MAG(a)] : ctlmem[MAG(a)];
 }
 
 #define CheckMemWrite(a)    CheckAddr(a, "MEMORY WRITE")
@@ -599,9 +652,15 @@ Word WriteField(Word v, int f, Word w)
 
 void MemWrite(Word a, int f, Word w)
 {
+	ASSERT(IsNormal() || IsControl());
+	
 	Tyme++; TIMER++;
     a = MAG(a);
-    mem[a] = WriteField(mem[a], f, w);
+    if (IsNormal()) {
+    	mem[a] = WriteField(mem[a], f, w);
+	} else {
+		ctlmem[a] = WriteField(ctlmem[a], f, w);
+	}
 }
 
 int CheckMemMove(Word src, Word dst, int n)
@@ -641,6 +700,7 @@ typedef struct __Device {
 	unsigned pos;
 	unsigned max_pos;
 	unsigned evt;
+	Toggle pending;
 } Device;
 
 #define IO_SLOTS   21
@@ -761,7 +821,7 @@ struct {
 };
 
 
-typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT} EventType;
+typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_BRK} EventType;
 
 typedef struct __Event {
     EventType what;
@@ -783,53 +843,9 @@ static char *sio[] = {
 	"DOIO.NOP",
 	"DOIO.IOC",
 	"DOIO.IN",
-	"DOIO.OUT"
+	"DOIO.OUT",
+	"DOIO.BRK"
 };
-
-void doIO(int u)
-{
-    Word M, LOC;
-    int x;
-
-    ASSERT(EventH != u+1);
-    ASSERT(0 == events[u].next);
-    ASSERT(DO_NOTHING != events[u].what);
-
-    LOC = events[u].LOC;
-    M = events[u].M;
-    x = devIdx(u);
-
-	if (TRACEIO)
-    	fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, u, M, sio[events[u].what]);
-    	
-    switch (events[u].what) {
-    case DO_NOTHING:
-        break;
-    case DO_IOC:
-        blkSeek(u, M);
-        break;
-    case DO_IN:
-        blkRead(u, M, IOchar[x].a2m);
-        break;
-    case DO_OUT:
-        blkWrite(u, M, IOchar[x].m2a);
-        break;
-    }
-    events[u].what = DO_NOTHING;
-}
-
-void DoEvents(void)
-{
-	int u;
-	
-	while (EventH && events[EventH-1].when <= Tyme) {
-		u = EventH-1;
-		EventH = events[u].next;
-		events[u].next = 0;
-		doIO(u);
-	}
-}
-
 
 void Schedule(unsigned delta, int u, EventType what, Word M)
 {
@@ -879,6 +895,59 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     }
 }
 
+void doIO(int u)
+{
+    Word M, LOC;
+    int x;
+    EventType what;
+
+    ASSERT(EventH != u+1);
+    ASSERT(0 == events[u].next);
+    ASSERT(DO_NOTHING != events[u].what);
+
+    LOC = events[u].LOC;
+    M = events[u].M;
+    x = devIdx(u);
+
+	if (TRACEIO)
+    	fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, u, M, sio[events[u].what]);
+    	
+	what = events[u].what;
+    switch (what) {
+    case DO_NOTHING:
+        break;
+    case DO_IOC:
+        blkSeek(u, M);
+        break;
+    case DO_IN:
+        blkRead(u, M, IOchar[x].a2m);
+        break;
+    case DO_OUT:
+        blkWrite(u, M, IOchar[x].m2a);
+        break;
+	case DO_BRK:
+		ASSERT(!devs[u].pending);
+		devs[u].pending = ON;
+		break;
+    }
+    events[u].what = DO_NOTHING;
+    
+    if (IsControl() && DO_BRK == what) {
+	    Schedule(devs[u].evt - Tyme, u, DO_BRK, M);
+    }
+}
+
+void DoEvents(void)
+{
+	int u;
+	
+	while (EventH && events[EventH-1].when <= Tyme) {
+		u = EventH-1;
+		EventH = events[u].next;
+		events[u].next = 0;
+		doIO(u);
+	}
+}
 
 int devIdx(int u)
 {
@@ -929,7 +998,7 @@ int devBusy(int u)
         if (Tyme >= WaitEvt)
             Awake();
     }
-    return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt);
+    return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt) || (devs[u].pending);
 }
 
 int IsCRLF(int ch)
@@ -2725,6 +2794,14 @@ int Step(void)
             case  9: /*INT*/
                 if (CheckInterrupt())
                     return 1;
+                ASSERT(IsNormal() || IsControl());
+                if (IsNormal()) {
+	                SaveSTATE();
+	                P = 12;
+                } else {
+	                RestoreSTATE();
+                }
+                Tyme++;
                 return FieldError(F);
             case 10: /*XCH*/
                 if (CheckBinary())
@@ -3029,7 +3106,9 @@ void InitMemory(void)
 {
     int i;
 
-    /* --- memory --- */
+    ctlmem = NULL;
+    ctlfreq = NULL;
+    
     if (CONFIG & MIX_MASTER) {
         IX_MASK = SM_MASK(15); MAX_MEM = 31999;
         MAX_DEVS = 64;
@@ -3037,16 +3116,30 @@ void InitMemory(void)
         IX_MASK = SM_MASK(12); MAX_MEM = 3999;
         MAX_DEVS = 21;
     }
+    if (CONFIG & MIX_INTERRUPT) {
+	    ctlmem = malloc((MAX_MEM + 1) * sizeof(Word));
+    	ctlfreq = malloc((MAX_MEM + 1) * sizeof(unsigned short));
+	    if (NULL == ctlmem || NULL == ctlfreq) {
+		    goto ErrOut;
+	    }
+		for (i = 0; i < MAX_MEM + 1; i++) {
+			ctlmem[i] = ctlfreq[i] = 0;
+		}
+    }
     mem  = malloc((MAX_MEM + 3) * sizeof(Word));
     freq = malloc((MAX_MEM + 3) * sizeof(unsigned short));
     devs = malloc(MAX_DEVS * sizeof(Device));
     events = malloc(MAX_DEVS * sizeof(Event));
     if (NULL == mem || NULL == freq || NULL == devs || events == NULL) {
-        exit(1);
+        goto ErrOut;
     }
 	for (i = 0; i < MAX_MEM + 3; i++) {
 		mem[i] = freq[i] = 0;
 	}
+	return;
+ErrOut:
+	fprintf(stderr, "-E-MIX: NOT ENOUGH MEMORY\n");
+	exit(1);
 }
 
 void InitMixToAscii(void)
@@ -3120,6 +3213,7 @@ void Init(void)
     /* --- units --- */
 	for (i = 0; i < MAX_DEVS; i++) {
 		devs[i].fd = devs[i].fdout = NULL;
+		devs[i].pending = OFF;
         events[i].what = DO_NOTHING;
         events[i].next = 0;
     }
