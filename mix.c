@@ -13,12 +13,13 @@
  *
  *  TODO
  *  ====
- *  - assembler: 197. local symbols, free fmt
+ *  - assembler: free fmt
  *  - simplify disassembler mnemonics
  *  
  *
  *  History:
  *  ========
+ *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
  *  250628AP    fixed DEV_TT handling
  *              fixed JNE 'F' error
  *              report undefined syms
@@ -120,6 +121,8 @@ typedef enum {S_HALT, S_STOP, S_WAIT, S_NORMAL, S_CONTROL} MachineState;
 #define MIX_MASTER     128
 Word CONFIG;
 
+#define CORE_MEM    "core.mem"
+#define CORE_CTL    "core.ctl"
 #define MAX_MEM		4001
 #define TRACE       mem[4000]
 #define TIMER       mem[4001]
@@ -127,7 +130,7 @@ Word CONFIG;
 Word reg[10], mem[MAX_MEM+1], P;
 Toggle OT;
 enum {LESS, EQUAL, GREATER} CI;
-Toggle TRANS, LNKLD, DUMP;
+Toggle TRANS, LNKLD, DUMP, STAN;
 char TRANSNM[5+1];
 
 FILE *LPT;
@@ -634,10 +637,11 @@ IOC
 
 #define NMIXCHARS   64
 #define NASCCHARS   256
-/*		                     1         2         3         4         5         6	 */
-/*		           0123456789012345678901234567890123456789012345678901234567890123*/
-char    m2a[64] = " ABCDEFGHI~JKLMNOPQR[#STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
-char cr_m2a[64] = " ABCDEFGHI~JKLMNOPQR  STUVWXYZ0123456789.,()+-*/=???????????????";
+/*		                          1         2         3         4         5         6	 */
+/*		                0123456789012345678901234567890123456789012345678901234567890123*/
+char knuth_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
+char  stan_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
+char m2a[64+1], cr_m2a[64];
 Byte a2m[256], cr_a2m[256];
 
 
@@ -969,13 +973,38 @@ ErrOut:
 	devError(u);
 }
 
+void blkDump(int u, unsigned adr)
+{
+    int i, j, n, x;
+    unsigned Blk_size;
+	Byte tmp[LP_BLOCK * BYTES];
+
+    if (!TRACEIO)
+        return;
+
+	x = devIdx(u);
+	Blk_size = IOchar[x].blk_size;
+
+	n = Blk_size * BYTES;
+	j = 0;
+	for (i = 0; i < Blk_size; i++) {
+		UnPack(mem[adr + i], tmp, j);
+		j += BYTES;
+	}
+    fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLK.OUT BUF=", u, adr);
+	for (i = 0; i < n; i++) {
+        fprintf(stderr, " %02o", tmp[i]);
+		// buf[i] = cvt[tmp[i]];
+    }
+    fprintf(stderr, "\n");
+}
 
 void blkWrite(int u, unsigned adr, char *cvt)
 {
 	unsigned ret, n;
 	int i, j, x;
 	Byte tmp[LP_BLOCK * BYTES];
-    char buf[LP_BLOCK * BYTES + 1];     /* terminal CR/LF */
+    char buf[LP_BLOCK * BYTES + 1 + 1];     /* + CR/LF + NUL */
 	unsigned Blk_size;
     FILE *fd;
 	
@@ -997,14 +1026,18 @@ void blkWrite(int u, unsigned adr, char *cvt)
 		UnPack(mem[adr + i], tmp, j);
 		j += BYTES;
 	}
-	for (i = 0; i < n; i++)
+	for (i = 0; i < n; i++) {
 		buf[i] = cvt[tmp[i]];
+    }
 
     if (IOchar[x].cr) {
         buf[n++] = '\n';
     }
+    buf[n] = 0;
 
 	ret = fwrite(buf, sizeof(char), n, fd);
+    if (TRACEIO)
+        fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLKWRITE BUF='%s'\n", u, adr, buf);
 	if (ret == n) {
         fflush(fd);
 		return;
@@ -2217,7 +2250,10 @@ int Assemble(char *line)
         else if (!strcmp(OP, "END ")) {
             DefineLiterals();
             OLDP = P;
-            START = w = field(Wvalue(), FIELD(4,5));
+            if (SM_MINUS1 == START)
+                START = w = field(Wvalue(), FIELD(4,5));
+            else
+                fprintf(stderr, "-W-MIX: START ADDRESS IGNORED\n");
             NEEDAWS = 'S';
             OPEND = ON;
             if (' ' != LOCATION[0])
@@ -2247,16 +2283,18 @@ Out:
 
 int Asm(const char *nm)
 {
-    char *ptr, line[MAX_LINE+1];
+    char *ptr, line[MAX_LINE+1], path[MAX_LINE+1];
     int n, failed;
     FILE *fd;
 
-    fd = fopen(nm, "rt");
+    strcpy(path, nm);
+    fd = fopen(path, "rt");
+    strtoupper(path);
     if (NULL == fd) {
-        fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", nm);
+        fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", path);
         return 1;
     }
-    fprintf(stderr, "-I-MIX: PROCESSING %s\n", nm);
+    fprintf(stderr, "-I-MIX: PROCESSING %s\n", path);
 
     nsyms = 0; nload = 0;
     InitLocalSyms();
@@ -2276,7 +2314,8 @@ int Asm(const char *nm)
         LNO++; ptr = fgets(line, sizeof(line), fd);
     }
     fclose(fd);
-    fprintf(stderr, "-I-MIX: ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
+    fprintf(stderr, "-I-MIX: ASSEMBLE %s\n\n", failed ? "FAILED" : "DONE");
+
     return 0;
 }
 
@@ -2331,7 +2370,7 @@ void decode(Word C, Word F)
 
 void Status(Word P)
 {
-	static char *sot = " X", *sci = "LEG", *ssta = "HSWN ";
+	static char *sot = " X", *sci = "<=>", *ssta = "HSWN ";
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
 	
@@ -2352,7 +2391,7 @@ void Status(Word P)
 N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
 	if (0 == (TraceCount++ % 31))
-		fprintf(stderr,"  LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME\n");
+		fprintf(stderr, "  LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X  RI1   RI2   RI3   RI4   RI5   RI6   RJ  OV CI   TYME\n");
 	fprintf(stderr, "%c%04o %04d ", ssta[STATE], P, freq[P] % 9999);
     xprint(A); bprint(I); bprint(F); bprint(C);
 	fprintf(stderr, "%s ", mnemo);
@@ -2798,24 +2837,13 @@ void Init(void)
     ZERO = 0;
 	STATE = S_HALT; Halt();
     TRACE = OFF; TRACEIO = OFF; TraceCount = 0; TRACEA = OFF;
-    TRANS = LNKLD = DUMP = OFF;
-    for (i = 0; i < sizeof(TRANSNM); i++) {
-        TRANSNM[i] = 0;
-    }
+    TRANS = LNKLD = DUMP = STAN = OFF;
+    START = SM_MINUS1;
+    TRANSNM[0] = 0;
 
 	for (i = 0; i <= MAX_MEM; i++) {
-		freq[i] = 0;
+		mem[i] = freq[i] = 0;
 	}
-
-    for (i = 0; i < 256; i++)
-        a2m[i] = cr_a2m[i] = 0;
-
-	for (i = 0; i < 64; i++) {
-		a2m[(int) m2a[i]] = i;
-		cr_a2m[(int) cr_m2a[i]] = i;
-	}
-    a2m[' '] = cr_a2m[' '] = 0;
-    a2m['?'] = cr_a2m['?'] = 0;
 
 	for (i = 0; i < MAX_DEVS; i++) {
 		devs[i].fd = devs[i].fdout = NULL;
@@ -2831,10 +2859,53 @@ void Init(void)
     FF = OFF;
 }
 
+void InitMixToAscii(void)
+{
+    int i;
+
+    strcpy(m2a, STAN ? stan_m2a : knuth_m2a);
+    for (i = 0; i < 256; i++) {
+        a2m[i] = cr_a2m[i] = 0;
+    }
+
+	for (i = 0; i < 49; i++) {
+        cr_m2a[i] = m2a[i];
+    }
+    cr_m2a[20] = cr_m2a[21] = '?';
+    for (i = 49; i < 63; i++) {
+        cr_m2a[i] = '?';
+    }
+
+	for (i = 0; i < 64; i++) {
+		a2m[(int) m2a[i]] = i;
+		cr_a2m[(int) cr_m2a[i]] = i;
+	}
+    cr_a2m[' '] = 0; cr_a2m['?'] = 0;
+    if (!STAN) {
+        a2m[' '] = 0;
+        a2m['?'] = 0;
+    }
+}
+
+void InitCore(void)
+{
+    int n;
+    FILE *fd;
+
+    fd = fopen(CORE_MEM, "rb");
+    if (fd) {
+        n = fread(mem, sizeof(Word), MAX_MEM+1, fd);
+        if (n != MAX_MEM+1)
+            fprintf(stderr, "-W-MIX: LOAD CORE FAILED\n");
+        fclose(fd);
+    }
+}
+
 
 void Finish(void)
 {
-    int i;
+    int n, i;
+    FILE *fd;
 
     for (i = 0; i < MAX_DEVS; i++) {
         if (stdout == devs[i].fdout)
@@ -2844,27 +2915,41 @@ void Finish(void)
         if (devs[i].fd)
             fclose(devs[i].fd);
     }
+
+    if (CONFIG & MIX_CORE) {
+        fd = fopen(CORE_MEM, BIN_CREATE);
+        if (fd) {
+            n = fwrite(mem, sizeof(Word), MAX_MEM+1, fd);
+            if (n != sizeof(mem))
+                fprintf(stderr, "-E-MIX: SAVE CORE FAILED\n");
+            fclose(fd);
+        } else
+            fprintf(stderr, "-E-MIX: CANNOT SAVE CORE\n");
+
+    }
 }
 
 
 void Usage(void)
 {
-	fprintf(stderr, "usage: mix [-a file][-bcfgimx][-d][-e addr][-t aio][-l][-p name]\n");
+	fprintf(stderr, "usage: mix [-bcfgimx][-6ad][-s addr][-t aio][-lpr] file1...\n");
     fprintf(stderr, "options:\n");
-    fprintf(stderr, "    -a file    assemble only file\n");
     fprintf(stderr, "    -b         install binary MIX\n");
-    fprintf(stderr, "    -c         core memory (core.mem, core.ctl)\n");
+    fprintf(stderr, "    -c         core memory (core.mem)\n");
     fprintf(stderr, "    -f         install floating-point attachment\n");
     fprintf(stderr, "    -g [unit]  push GO button on unit (def. card reader)\n");
     fprintf(stderr, "    -i         install interrupt facility\n");
     fprintf(stderr, "    -m         Mixmaster\n");
     fprintf(stderr, "    -x         install double/indirect-indexing facility\n");
 
+    fprintf(stderr, "    -6         use Stanford MIX/360 charset\n");
+    fprintf(stderr, "    -a         assemble only\n");
     fprintf(stderr, "    -d         dump non-zero locations\n");
-    fprintf(stderr, "    -e address set entry point\n");
     fprintf(stderr, "    -l         punch LNKLD cards\n");
+    fprintf(stderr, "    -p         punch nonzero locations in TRANS fmt\n");
+    fprintf(stderr, "    -r         free fmt MIXAL\n");
+    fprintf(stderr, "    -s address set START address\n");
     fprintf(stderr, "    -t aio     enable tracing: Asm,Io,Op\n");
-    fprintf(stderr, "    -p name    punch nonzero locations in TRANS fmt\n");
 	exit(1);
 }
 
@@ -2960,6 +3045,8 @@ void PunchTrans(void)
     char buf[16];
     FILE *fout;
 
+    if (0 == TRANSNM[0])
+        strcpy(TRANSNM, "core");
     strcpy(buf, TRANSNM);
     strcat(buf, ".tra");
     strtolower(buf);
@@ -2974,47 +3061,59 @@ void PunchTrans(void)
 int main(int argc, char*argv[])
 {
 	int i, j, u;
-	char *arg, *ASMIN;
-    Toggle GO;
+	char *arg;
+    Toggle ASMONLY, GO;
 
-    GO = OFF; ASMIN = NULL; u = DEV_CR;
+    ASMONLY = OFF; GO = OFF; u = DEV_CR;
     
 	Init();
+    InitMixToAscii();
 	for (i = 1; i < argc; i++) {
 		arg = argv[i];
-		if ('-' != *arg)
-			Usage();
+		if ('-' != *arg) {
+            strncpy(TRANSNM, arg, 5);
+            strtoupper(TRANSNM);
+	        Asm(arg);
+            arg = strchr(TRANSNM, '.');
+            if (arg) *arg = 0;
+            continue;
+        } 
 		switch (arg[1]) {
-        case 'a':
-            if (i + 1 < argc) {
-                ASMIN = argv[++i];
-                continue;
-            }
-            break;
         case 'b': CONFIG += MIX_BINARY; continue;
-        case 'c': CONFIG += MIX_CORE; continue;
+        case 'c':
+            CONFIG += MIX_CORE;
+            InitCore();
+            continue;
         case 'f': CONFIG += MIX_FLOAT; continue;
 		case 'g':
             CONFIG += MIX_PUSHGO;
             GO = ON;
 			if (i + 1 < argc) {
-                arg = argv[++i];
-                if (IsDigit(*arg))
-				    u = atoi(arg);
+                arg = argv[i+1];
+                if (IsDigit(*arg)) {
+				    u = atoi(arg); i++;
+                }
 			}
 			continue;
         case 'i': CONFIG += MIX_INTERRUPT; continue;
         case 'm': CONFIG += MIX_MASTER; continue;
         case 'x': CONFIG += MIX_INDEX; continue;
 
+        case '6':
+            STAN = ON;
+            InitMixToAscii();
+            continue;
+        case 'a': ASMONLY = ON; continue;
         case 'd': DUMP = ON; continue;
-        case 'e':
+        case 'l': LNKLD = ON; continue;
+        case 'p': TRANS = ON; continue;
+        case 'r': FF = ON; continue;
+        case 's':
 			if (i + 1 < argc) {
                 START = atoi(argv[++i]);
                 continue;
             }
             break;
-        case 'l': LNKLD = ON; continue;
 		case 't':
 			if (i + 1 < argc) {
 				arg = argv[++i];
@@ -3030,36 +3129,27 @@ int main(int argc, char*argv[])
 				continue;
 			}
 			break;
-        case 'p':
-            if (i + 1 < argc) {
-                TRANS = ON;
-                strncpy(TRANSNM, argv[++i], 5);
-                strtoupper(TRANSNM);
-                continue;
-            }
-            break;
 		}
 		Usage();
 	}
 
-    if (ASMIN || GO) {
-        if (ASMIN) {
-	        Asm(ASMIN);
-            if (TRANS)
-                PunchTrans();
-            Run(START);
-        }
-        else {
-            if (0 == devOpen(u))
-	            Go(u);
-        }
-        if (DUMP)
-            Stats(stderr, 4, 0);
-        if (GO) {
-            fprintf(LPT, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
-            fprintf(LPT, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
-        }
+    if (SM_MINUS1 == START)
+        START = 0;
+
+    if (TRANS)
+        PunchTrans();
+    if (GO) {
+        if (0 == devOpen(u))
+	        Go(u);
+    } else if (!ASMONLY)
+        Run(START);
+    if (DUMP)
+        Stats(stderr, 4, 0);
+    if (InstCount) {
+        fprintf(stderr, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
+        fprintf(stderr, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
     }
+
     Finish();
 
 	return 0;
