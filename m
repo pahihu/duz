@@ -11,7 +11,7 @@ rm -f core.mem
 rm -f printer
 
 # run from core
-./mix -c -s 3000 2>&1 | tee runcore.log
+./mix -c -t o -s 3000 2>&1 | tee runcore.log
 exit 0
 
 # load cardload and prime.tra into card reader
