@@ -1,12 +1,18 @@
 #!/bin/bash
 make
 rm -f printer *.tra
+rm -f *.log
 
 # assemble primes2.mix, save as prime.tra
-./mix -a primes2.mix -p 2>&1 | tee runmix.log
+rm -f core.mem
+./mix -a primes2.mix -p -c 2>&1 | tee runmix.log
 
-# wipe out printer
+# wipe out printer and core
 rm -f printer
+
+# run from core
+./mix -c -s 3000 2>&1 | tee runcore.log
+exit 0
 
 # load cardload and prime.tra into card reader
 cat cardload.dek prime.tra >reader

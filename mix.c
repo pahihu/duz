@@ -20,6 +20,7 @@
  *  History:
  *  ========
  *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
+ *              fixed save CORE
  *  250628AP    fixed DEV_TT handling
  *              fixed JNE 'F' error
  *              report undefined syms
@@ -2920,7 +2921,7 @@ void Finish(void)
         fd = fopen(CORE_MEM, BIN_CREATE);
         if (fd) {
             n = fwrite(mem, sizeof(Word), MAX_MEM+1, fd);
-            if (n != sizeof(mem))
+            if (n != MAX_MEM+1)
                 fprintf(stderr, "-E-MIX: SAVE CORE FAILED\n");
             fclose(fd);
         } else
