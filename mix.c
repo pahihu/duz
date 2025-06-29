@@ -18,7 +18,7 @@
  *
  *  Instruction extensions
  *  ======================
- *  - standard: 1.3.1 pp.120, 1.3.2 pp.141
+ *  - standard: 1.3.1 pp.124, 1.3.2 pp.141
  *  - binary: AND OR XOR NEG XCH SLB SRB JrE JrO (Ex.2.5-28 pp.455) [f]
  *  - float: FLOT FIX FADD FSUB FMUL FDIV FCMP Vol.2 4.2 pp.214
  *		FLOT pp.221
@@ -40,7 +40,7 @@
  *              added F check for I/O ops
  *              added Mixmaster: 32KW memory + 64 I/O devices
  *              added double/indirect-addressing
- *				added interrupt skeleton
+ *				added interrupt handling and real-time clock
  *  250628AP    fixed DEV_TT handling
  *              fixed JNE 'F' error
  *              report undefined syms
@@ -150,7 +150,11 @@ unsigned MAX_MEM;
 #define TRACE       mem[MAX_MEM+1]
 #define TIMER       mem[MAX_MEM+2]
 
-#define	RTC			ctlmem[10]
+#define ADDR_RTC			10
+#define INT_ADDR_RTC		11
+#define INT_ADDR_OP			12
+#define INT_ADDR_DEV_BASE	20
+#define	RTC					ctlmem[ADDR_RTC]
 
 Word reg[10], *mem, *ctlmem, P;
 Toggle OT;
@@ -525,7 +529,7 @@ int Halted(void)
     return S_HALT == STATE;
 }
 
-void SaveSTATE(void)
+void SaveSTATE(Word loc)
 {
 	int i;
 	Word w;
@@ -539,6 +543,9 @@ void SaveSTATE(void)
 	w += FIELD(OT,CI); w <<= 12;
 	w += rJ;
 	ctlmem[1] = w;
+
+	STATE = S_CONTROL;
+	P = loc;
 }
 
 void RestoreSTATE(void)
@@ -557,6 +564,8 @@ void RestoreSTATE(void)
 
 	for (i = 0; i < 8; i++)
 		reg[i] = ctlmem[i + 1];
+
+	STATE = S_NORMAL;
 }
 
 
@@ -619,10 +628,10 @@ int CheckAddr(Word a, char *msg)
 
 Word MemRead(Word a)
 {
-	ASSERT(IsNormal() || IsControl());
+	ASSERT(IsNormal() || IsControl() || Waiting());
 	
 	Tyme++; TIMER++;
-	return IsNormal() ? mem[MAG(a)] : ctlmem[MAG(a)];
+	return IsControl() ? ctlmem[MAG(a)] : mem[MAG(a)];
 }
 
 #define CheckMemWrite(a)    CheckAddr(a, "MEMORY WRITE")
@@ -648,19 +657,6 @@ Word WriteField(Word v, int f, Word w)
 		vv += SIGN(w);
 	}
 	return vv + (~mask & v);
-}
-
-void MemWrite(Word a, int f, Word w)
-{
-	ASSERT(IsNormal() || IsControl());
-	
-	Tyme++; TIMER++;
-    a = MAG(a);
-    if (IsNormal()) {
-    	mem[a] = WriteField(mem[a], f, w);
-	} else {
-		ctlmem[a] = WriteField(ctlmem[a], f, w);
-	}
 }
 
 int CheckMemMove(Word src, Word dst, int n)
@@ -703,9 +699,18 @@ typedef struct __Device {
 	Toggle pending;
 } Device;
 
-#define IO_SLOTS   21
+#define IO_SLOTS    21
+#define UNO(x)		((x)-1)
+
+/*		UNO									DEVNO
+ *   -: RTC									 0
+ *   0: MT0 MT1 MT2 MT3 MT4 MT5 MT6 MT7		 1.. 8
+ *   8: DK0 DK1 DK2 DK3 DK4 DK5 DR6 DR7		 9..16
+ *	16: CR  CP  LP  TT  PT					17..21
+ */
 int MAX_DEVS;
 Device *devs;
+int NPending;
 
 /* 
 Input/Output
@@ -772,14 +777,15 @@ Byte a2m[256], cr_a2m[256];
  *
  */
 
-#define	DEV_MT 0
-#define	DEV_DK 1
-#define DEV_DR 2
-#define	DEV_CR 3
-#define	DEV_CP 4
-#define	DEV_LP 5
-#define DEV_TT 6
-#define	DEV_PT 7
+#define DEV_RTC	0
+#define	DEV_MT 	1
+#define	DEV_DK 	2
+#define DEV_DR 	3
+#define	DEV_CR 	4
+#define	DEV_CP 	5
+#define	DEV_LP 	6
+#define DEV_TT 	7
+#define	DEV_PT 	8
 
 #define CARD_READER  16
 #define LP_BLOCK 24
@@ -810,6 +816,7 @@ struct {
 	unsigned seek_tyme;
 } IOchar[] = {
     /*     name         fam     a2m     m2a    max  blk cr     in      out   rot     seek */
+	{      NULL,       NULL,   NULL,   NULL,     0,   0, 0,     0,       0,    0,       0 },    /* DEV_RTC */
 	{    "tape", BIN_RWRITE,   NULL,   NULL, 17280, 100, 0,  3056,    3056,    0,     859 },    /* DEV_MT */
 	{    "disk", BIN_RWRITE,   NULL,   NULL,  4096, 100, 0,   833,     833, 6666,       0 },    /* DEV_DK */
     {    "drum", BIN_RWRITE,   NULL,   NULL,   512, 100, 0,   333,    1333, 2666,       0 },    /* DEV_DR */
@@ -820,7 +827,6 @@ struct {
 	{   "ptape", TXT_RWRITE,    a2m,    m2a,  1707,  14, 0, 23333,  116667,    0,   23333 },    /* DEV_PT */
 };
 
-
 typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_BRK} EventType;
 
 typedef struct __Event {
@@ -828,6 +834,7 @@ typedef struct __Event {
     unsigned when;
     unsigned LOC;
     unsigned M;
+    MachineState S;
     int next;
 } Event;
 Event *events;
@@ -866,6 +873,7 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     events[u].when = when;
     events[u].LOC = P;
     events[u].M = M;
+    events[u].S = STATE;
 
     i = EventH;
     while (i && events[i-1].when <= when) {
@@ -887,7 +895,7 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
 	    i = EventH;
 	    while (i) {
 		    p = i-1;
-		   	fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n",
+			fprintf(stderr, "-I-MIX: %07u LOC=%04o DEV=%02o/%04o %s\n",
 		   		events[p].when, events[p].LOC, p, events[p].M, sio[events[p].what]);
 		    i = events[p].next;
 	    }
@@ -910,14 +918,25 @@ void doIO(int u)
     x = devIdx(u);
 
 	if (TRACEIO)
-    	fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, u, M, sio[events[u].what]);
+        fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, UNO(u), M, sio[events[u].what]);
     	
 	what = events[u].what;
     switch (what) {
     case DO_NOTHING:
         break;
     case DO_IOC:
-        blkSeek(u, M);
+        if (DEV_RTC == u) {
+            if (MAG(RTC)) {
+                RTC = smSUB(RTC, 1);
+                if (MAG(RTC)) {
+                    Schedule(1000, u, DO_IOC, M);
+                } else {
+                    goto DoBrk;
+                }
+            }
+        } else {
+            blkSeek(u, M);
+        }
         break;
     case DO_IN:
         blkRead(u, M, IOchar[x].a2m);
@@ -926,15 +945,32 @@ void doIO(int u)
         blkWrite(u, M, IOchar[x].m2a);
         break;
 	case DO_BRK:
+DoBrk:
 		ASSERT(!devs[u].pending);
-		devs[u].pending = ON;
+		devs[u].pending = ON; NPending++;
 		break;
     }
     events[u].what = DO_NOTHING;
     
-    if (IsControl() && DO_BRK == what) {
+    if (S_CONTROL == events[u].S && u && DO_BRK != what) {
 	    Schedule(devs[u].evt - Tyme, u, DO_BRK, M);
     }
+}
+
+void MemWrite(Word a, int f, Word w)
+{
+	ASSERT(IsNormal() || IsControl());
+
+	Tyme++; TIMER++;
+    a = MAG(a);
+    if (IsControl()) {
+		ctlmem[a] = WriteField(ctlmem[a], f, w);
+		if (ADDR_RTC == a) {
+			Schedule(1000U, DEV_RTC, DO_IOC, 0);
+		}
+	} else {
+        mem[a] = WriteField(mem[a], f, w);
+	}
 }
 
 void DoEvents(void)
@@ -949,13 +985,44 @@ void DoEvents(void)
 	}
 }
 
+void DoPending(void)
+{
+	int i, u, x, prio;
+
+	ASSERT(IsNormal());
+
+	u = 0; prio = 999;
+	for (i = 0; i < MAX_DEVS; i++) {
+		if (devs[i].pending) {
+			x = devIdx(i);
+			if (x < prio) {
+				prio = x;
+				u = i + 1;
+			}
+		}
+	}
+	if (u--) {
+		NPending--;
+		devs[u].pending = OFF;
+		SaveSTATE(u ? INT_ADDR_DEV_BASE + u : INT_ADDR_RTC);
+	}
+}
+
 int devIdx(int u)
 {
-    u = u % IO_SLOTS;
+	int ret;
 
-    if (u <= 15)
-        return u > 13 ? 3: u / 8;
-    return u - 13;
+	/* special real-time clock */
+	if (DEV_RTC == u)
+		return DEV_RTC;
+	/* 21 I/O cards in a cabinet, Mixmaster have 3 cabinets */
+    u = (u - 1) % IO_SLOTS;
+    if (u <= 15) {
+        ret = u > 13 ? 2: u / 8;
+	} else {
+        ret = u - 13;
+	}
+    return ret + 1;
 }
 
 Word Pack(Byte *buf, int offs)
@@ -1072,7 +1139,7 @@ void blkRead(int u, unsigned adr, Byte *cvt)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKREAD FAILED\n", P, u, adr);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKREAD FAILED\n", P, UNO(u), adr);
 	devError(u);
 }
 
@@ -1091,7 +1158,7 @@ void blkDump(int u, unsigned adr)
 		UnPack(mem[adr + i], tmp, j);
 		j += BYTES;
 	}
-    fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLK.OUT BUF=", u, adr);
+    fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLK.OUT BUF=", UNO(u), adr);
 	for (i = 0; i < n; i++) {
         fprintf(stderr, " %02o", tmp[i]);
 		// buf[i] = cvt[tmp[i]];
@@ -1137,14 +1204,14 @@ void blkWrite(int u, unsigned adr, char *cvt)
 
 	ret = fwrite(buf, sizeof(char), n, fd);
     if (TRACEIO) {
-        fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLKWRITE BUF='%s'\n", u, adr, buf);
+        fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLKWRITE BUF='%s'\n", UNO(u), adr, buf);
     }
 	if (ret == n) {
         fflush(fd);
 		return;
     }
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKWRITE FAILED\n", P, u, adr);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKWRITE FAILED\n", P, UNO(u), adr);
 	devError(u);
 }
 
@@ -1190,7 +1257,7 @@ int devOpen(int u)
 	devs[u].max_pos = 0;
 	fd = fopen(devname, IOchar[x].fam);
     if (TRACEIO) {
-        fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o INIT %s\n", P, u, devname);
+        fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o INIT %s\n", P, UNO(u), devname);
     }
 	if (fd) {
 		if (DEV_MT == x || DEV_CR == x) {
@@ -1228,7 +1295,7 @@ unsigned doIOC(int u,int *pM)
 	M = *pM;
 	
     if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IOC\n", P, u, M);
+	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IOC\n", P, UNO(u), M);
 
 	x = devIdx(u);	
 	if (!M) {
@@ -1270,7 +1337,7 @@ unsigned doIOC(int u,int *pM)
 		return IOchar[x].in_tyme * M;
 	}
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IOC UNSUPPORTED\n", P, u, M);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IOC UNSUPPORTED\n", P, UNO(u), M);
 	devError(u);
 	return 0;
 }
@@ -1307,7 +1374,7 @@ void devINP(int u, Word M)
 	delta = 0;
 	
     if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IN\n", P, u, M);
+	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IN\n", P, UNO(u), M);
 
 	if (DEV_MT == x) {
 		if (devs[u].pos >= devs[u].max_pos) {
@@ -1331,7 +1398,7 @@ void devINP(int u, Word M)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IN %s\n", P, u, M, errmsg);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IN %s\n", P, UNO(u), M, errmsg);
 	devError(u);
 }
 
@@ -1354,7 +1421,7 @@ void devOUT(Word u,Word M)
 	delta = 0;
 
     if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.OUT\n", P, u, M);
+	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.OUT\n", P, UNO(u), M);
 
 	if (DEV_MT == x) {
 		if (devs[u].pos >= IOchar[x].max_pos) {
@@ -1385,7 +1452,7 @@ void devOUT(Word u,Word M)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.OUT %s\n", P, u, M, errmsg);
+	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.OUT %s\n", P, UNO(u), M, errmsg);
 	devError(u);
 }
 
@@ -1399,6 +1466,11 @@ static struct {
 	{"SUB ", MM(02,05)},
 	{"MUL ", MM(03,05)},
 	{"DIV ", MM(04,05)},
+
+	{"FADD", MM(01,06)},
+	{"FSUB", MM(02,06)},
+	{"FMUL", MM(03,06)},
+	{"FDIV", MM(04,06)},
 
 	{"NUM ", MM(05,00)},
 	{"CHAR", MM(05,01)},
@@ -1595,6 +1667,8 @@ static struct {
 	{"CMP1", MM(075,05)},
 	{"CMP1", MM(076,05)},
 	{"CMPX", MM(077,05)},
+
+	{"FCMP", MM(070,06)},
 
     {  NULL, MM(000,00)},
 };
@@ -2433,6 +2507,8 @@ int Asm(const char *nm)
     int n, failed;
     FILE *fd;
 
+    STATE = S_NORMAL;
+
     strcpy(path, nm);
     fd = fopen(path, "rt");
     strtoupper(path);
@@ -2796,8 +2872,7 @@ int Step(void)
                     return 1;
                 ASSERT(IsNormal() || IsControl());
                 if (IsNormal()) {
-	                SaveSTATE();
-	                P = 12;
+	                SaveSTATE(INT_ADDR_OP);
                 } else {
 	                RestoreSTATE();
                 }
@@ -2905,8 +2980,8 @@ int Step(void)
 	case 34: /*JBUS*/
         if (!RANGE(F,0,MAX_DEVS-1))
             return FieldError(F);
-        devOpen(F);
-		if (devBusy(F)) {
+        devOpen(F + 1);
+		if (devBusy(F + 1)) {
             rJ = P + 1;
 			P = M;
             return 0;
@@ -2915,28 +2990,28 @@ int Step(void)
 	case 35: /*IOC*/
 	case 36: /*IN*/
     case 37: /*OUT*/
-        if (!RANGE(F,0,MAX_DEVS-1))
+        if (!RANGE(F,0,MAX_DEVS-2))
             return FieldError(F);
-		if (devOpen(F))
+		if (devOpen(F + 1))
 			return 0;
-        if (devBusy(F)) {
+        if (devBusy(F + 1)) {
             IdleTyme++;
             if (!Waiting())
-                WaitFor(devs[F].evt);
+                WaitFor(devs[F + 1].evt);
             return 0;
         }
         ASSERT(!Waiting());
         switch (C) {
-        case 35: devIOC(F, M); break;
-		case 36: devINP(F, M); break;
-		case 37: devOUT(F, M); break;
+        case 35: devIOC(F + 1, M); break;
+		case 36: devINP(F + 1, M); break;
+		case 37: devOUT(F + 1, M); break;
         }
 		break;
 	case 38: /*JRED*/
-        devOpen(F);
-        if (!RANGE(F,0,MAX_DEVS-1))
+        devOpen(F + 1);
+        if (!RANGE(F,0,MAX_DEVS-2))
             return FieldError(F);
-		if (!devBusy(F)) {
+		if (!devBusy(F + 1)) {
 			rJ = P + 1;
 			P = M;
             return 0;
@@ -3074,10 +3149,27 @@ void Run(Word p)
     }
 }
 
+void SaveCore(const char *path, Word *adr, int len, const char *msg)
+{
+	FILE *fd;
+	int n;
+
+	if (NULL == adr)
+		return;
+
+    fd = fopen(path, BIN_CREATE);
+    if (fd) {
+        n = fwrite(adr, sizeof(Word), len, fd);
+        if (n != len)
+            fprintf(stderr, "-E-MIX: SAVE %s FAILED\n", msg);
+        fclose(fd);
+    } else
+        fprintf(stderr, "-E-MIX: CANNOT SAVE %s\n", msg);
+}
+
 void Finish(void)
 {
-    int n, i;
-    FILE *fd;
+    int i;
 
     for (i = 0; i < MAX_DEVS; i++) {
         if (stdout == devs[i].fdout)
@@ -3086,18 +3178,13 @@ void Finish(void)
             fclose(devs[i].fd);
     }
 
-    if ((NULL != mem) && (CONFIG & MIX_CORE)) {
-        fd = fopen(CORE_MEM, BIN_CREATE);
-        if (fd) {
-            n = fwrite(mem, sizeof(Word), MAX_MEM + 1, fd);
-            if (n != MAX_MEM + 1)
-                fprintf(stderr, "-E-MIX: SAVE CORE FAILED\n");
-            fclose(fd);
-        } else
-            fprintf(stderr, "-E-MIX: CANNOT SAVE CORE\n");
-
+    if (CONFIG & MIX_CORE) {
+	    SaveCore(CORE_MEM, mem, MAX_MEM + 1, "CORE");
+	    SaveCore(CORE_CTL, ctlmem, MAX_MEM + 1, "CONTROL CORE");
     }
 
+    if (ctlfreq) free(ctlfreq);
+    if (ctlmem) free(ctlmem);
     if (freq) free(freq);
     if (mem) free(mem);
 }
@@ -3111,10 +3198,10 @@ void InitMemory(void)
     
     if (CONFIG & MIX_MASTER) {
         IX_MASK = SM_MASK(15); MAX_MEM = 31999;
-        MAX_DEVS = 64;
+        MAX_DEVS = 1 + 64;
     } else {
         IX_MASK = SM_MASK(12); MAX_MEM = 3999;
-        MAX_DEVS = 21;
+        MAX_DEVS = 1 + 21;
     }
     if (CONFIG & MIX_INTERRUPT) {
 	    ctlmem = malloc((MAX_MEM + 1) * sizeof(Word));
@@ -3170,18 +3257,27 @@ void InitMixToAscii(void)
     }
 }
 
-void InitCore(void)
+void LoadCore(const char *path, Word *adr, int len, const char *msg)
 {
-    int n;
-    FILE *fd;
+	FILE *fd;
+	int n;
 
-    fd = fopen(CORE_MEM, "rb");
+	if (NULL == adr)
+        return;
+
+    fd = fopen(path, "rb");
     if (fd) {
-        n = fread(mem, sizeof(Word), MAX_MEM + 1, fd);
-        if (n != MAX_MEM + 1)
-            fprintf(stderr, "-W-MIX: LOAD CORE FAILED\n");
+        n = fread(adr, sizeof(Word), len, fd);
+        if (n != len)
+            fprintf(stderr, "-W-MIX: LOAD %s FAILED\n", msg);
         fclose(fd);
     }
+}
+
+void InitCore(void)
+{
+    LoadCore(CORE_MEM,    mem, MAX_MEM + 1, "CORE");
+    LoadCore(CORE_MEM, ctlmem, MAX_MEM + 1, "CONTROL CORE");
 }
 
 void InitOptions(void)
@@ -3219,6 +3315,7 @@ void Init(void)
     }
     EventH = 0;
     WaitEvt = 0;
+    NPending = 0;
 
     if (CONFIG & MIX_CORE)
         InitCore();
