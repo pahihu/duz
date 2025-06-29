@@ -1013,9 +1013,6 @@ void blkDump(int u, unsigned adr)
     unsigned Blk_size;
 	Byte tmp[LP_BLOCK * BYTES];
 
-    if (!TRACEIO)
-        return;
-
 	x = devIdx(u);
 	Blk_size = IOchar[x].blk_size;
 
@@ -1070,8 +1067,9 @@ void blkWrite(int u, unsigned adr, char *cvt)
     buf[n] = 0;
 
 	ret = fwrite(buf, sizeof(char), n, fd);
-    if (TRACEIO)
+    if (TRACEIO) {
         fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLKWRITE BUF='%s'\n", u, adr, buf);
+    }
 	if (ret == n) {
         fflush(fd);
 		return;
@@ -2454,8 +2452,7 @@ void Status(Word P)
 	int i;
 	
 	P = MAG(P);
-	INST = mem[P];
-    w = MAG(INST);
+	INST = mem[P]; w = MAG(INST);
 	C = BYTE(w); w >>= 6;
 	F = BYTE(w); w >>= 6;
 	I = BYTE(w); w >>= 6;
@@ -2486,9 +2483,9 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         if ((RANGE(C,1,4) || RANGE(C,8,33) || RANGE(C,56,63))
                 && ((32 == C && 2 != F) || (32 != C && 5 != F)))
         {
-            fprintf(stderr,"(%d:%d)", L(F), R(F)); j = 0;
+            fprintf(stderr,"(%o:%o)", L(F), R(F)); j = 0;
         } else if (RANGE(C,34,38)) {
-            fprintf(stderr, "(%0o) ", F); j = 0;
+            fprintf(stderr, "(%02o) ", F); j = 0;
         }
     }
     i += j;
@@ -2591,8 +2588,7 @@ int EffectiveAddress(Word loc, Word *ea)
 A2:
     if (CheckMemRead(L))
         return 1;
-    INST = MemRead(L);
-    w = MAG(INST);
+    INST = MemRead(L); w = MAG(INST);
 	C = BYTE(w); w >>= 6;
 	F = BYTE(w); w >>= 6;
 	I = BYTE(w); w >>= 6;
@@ -2635,12 +2631,12 @@ int Step(void)
     if (CheckMemRead(P)) {
         return Stop();
 	}
-	IR = MemRead(P);
-	w = IR;
+	IR = MemRead(P); w = MAG(IR);
 	C = BYTE(w); w >>= 6;
 	F = BYTE(w); w >>= 6;
 	I = BYTE(w); w >>= 6;
 	A = A_MASK & w; if (SIGN(IR)) A += SM_SIGN;
+	M = A;
     if (I) {
         if (CONFIG & MIX_INDEX) {
             if (EffectiveAddress(P, &M))
