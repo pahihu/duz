@@ -48,6 +48,7 @@
  *              multiply defined asm literals
  *              fixed MUL/DIV timing
  *              added FP routine skeletons + timing + decoding
+ *              added DEC 026/029 card codes
  *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
  *              fixed save CORE
  *              added SLB, SRB, JrE, JrO, CPMr
@@ -200,7 +201,12 @@ unsigned MAX_MEM;
 Word reg[10], *mem, *ctlmem, P;
 Toggle OT;
 enum {LESS, EQUAL, GREATER} CI;
-Toggle TRANS, LNKLD, DUMP, STAN;
+Toggle TRANS, LNKLD, DUMP;
+#define CARD_MIX    0
+#define CARD_MIX360 1
+#define CARD_DEC026 2
+#define CARD_DEC029 3
+int CARDCODE;
 char TRANSNM[5+1];
 
 FILE *LPT;
@@ -903,8 +909,11 @@ IOC
 #define NASCCHARS   256
 /*		                          1         2         3         4         5         6	 */
 /*		                0123456789012345678901234567890123456789012345678901234567890123*/
-char knuth_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
-char  stan_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
+char  knuth_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
+char   stan_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
+char dec026_m2a[64+1] = " +-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ_=@^'\\?.)]<!:$*[>&;,(\"#%";
+char dec029_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+^!$*);\\],%_>?";
+char *cardcodes[] = { knuth_m2a, stan_m2a, dec026_m2a, dec029_m2a };
 char m2a[64+1], cr_m2a[64];
 Byte a2m[256], cr_a2m[256];
 
@@ -3499,27 +3508,35 @@ void InitMixToAscii(void)
 {
     int i;
 
-    strcpy(m2a, STAN ? stan_m2a : knuth_m2a);
+    strcpy(m2a, cardcodes[CARDCODE]);
     for (i = 0; i < 256; i++) {
         a2m[i] = cr_a2m[i] = 0;
     }
 
-	for (i = 0; i < 49; i++) {
-        cr_m2a[i] = m2a[i];
+    if (CARDCODE < 2) { /* MIX, MIX/360 */
+    	for (i = 0; i < 49; i++) {
+            cr_m2a[i] = m2a[i];
+        }
+        cr_m2a[20] = cr_m2a[21] = '?';
+        for (i = 49; i < 64; i++) {
+            cr_m2a[i] = '?';
+        }
+    } else { /* DEC 026/029 */
+    	for (i = 0; i < 64; i++) {
+            cr_m2a[i] = m2a[i];
+        }
     }
-    cr_m2a[20] = cr_m2a[21] = '?';
-    for (i = 49; i < 63; i++) {
-        cr_m2a[i] = '?';
-    }
-
 	for (i = 0; i < 64; i++) {
 		a2m[(int) m2a[i]] = i;
 		cr_a2m[(int) cr_m2a[i]] = i;
 	}
-    cr_a2m[' '] = 0; cr_a2m['?'] = 0;
-    if (!STAN) {
-        a2m[' '] = 0;
-        a2m['?'] = 0;
+	if (CARDCODE < 2) {
+        cr_a2m[' '] = 0;
+        cr_a2m['?'] = 0;
+        if (CARD_MIX == CARDCODE) {
+            a2m[' '] = 0;
+            a2m['?'] = 0;
+        }
     }
 }
 
@@ -3551,11 +3568,12 @@ void InitOptions(void)
     CONFIG = 0;
     LPT = stderr;
     TRACEOP = TRACEIO = OFF; TraceCount = 0; TRACEA = OFF;
-    TRANS = LNKLD = DUMP = STAN = OFF;
+    TRANS = LNKLD = DUMP = OFF;
     START = SM_MINUS1;
     TRANSNM[0] = 0;
     XEQTING = OFF;
     FF = OFF;
+    CARDCODE = CARD_MIX;
 }
 
 void Init(void)
@@ -3602,7 +3620,9 @@ void Usage(void)
     fprintf(stderr, "    -m         Mixmaster\n");
     fprintf(stderr, "    -x         install double/indirect-indexing facility\n");
 
-    fprintf(stderr, "    -6         use Stanford MIX/360 charset\n");
+    fprintf(stderr, "    -3         use Stanford MIX/360 charset\n");
+    fprintf(stderr, "    -6         use DEC 026 charset\n");
+    fprintf(stderr, "    -9         use DEC 029 charset\n");
     fprintf(stderr, "    -a         assemble only\n");
     fprintf(stderr, "    -d         dump non-zero locations\n");
     fprintf(stderr, "    -l         punch LNKLD cards\n");
@@ -3767,7 +3787,9 @@ int main(int argc, char*argv[])
         case 'm': CONFIG += MIX_MASTER; continue;
         case 'x': CONFIG += MIX_INDEX; continue;
 
-        case '6': STAN = ON; continue;
+        case '3': CARDCODE = CARD_MIX360; continue;
+        case '6': CARDCODE = CARD_DEC026; continue;
+        case '9': CARDCODE = CARD_DEC029; continue;
         case 'a': ASMONLY = ON; continue;
         case 'd': DUMP = ON; continue;
         case 'l': LNKLD = ON; continue;
