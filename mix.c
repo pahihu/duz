@@ -10,6 +10,13 @@
  *  MOVE 1u+Nx2u
  *  MUL	 10u
  *  DIV	 12u
+ *  FADD  4u
+ *  FSUB  4u
+ *  FMUL  9u
+ *  FDIV 11u
+ *  FLOT  3u
+ *  FCMP  4u
+ *  FIX   3u
  *
  *  TODO
  *  ====
@@ -19,12 +26,12 @@
  *  Instruction extensions
  *  ======================
  *  - standard: 1.3.1 pp.124, 1.3.2 pp.141
- *  - binary: AND OR XOR NEG XCH SLB SRB JrE JrO (Ex.2.5-28 pp.455) [f]
+ *  - binary: AND OR XOR NEG XCH SLB SRB JrE JrO (4.5.2 pp.339 and Ex.2.5-28 pp.455) [f]
  *  - float: FLOT FIX FADD FSUB FMUL FDIV FCMP Vol.2 4.2 pp.214
  *		FLOT pp.221
  *		FIX	 pp.224
  *		FCMP Ex.4.2.2-17 pp.244 (solution pp.615)
- *		FIX subroutine Ex.4.2.1-14 (solution pp.612)
+ *		FIX  subroutine Ex.4.2.1-14 (solution pp.612)
  *  - interrupt: INT Ex.1.4.4-18 pp.228 [d]
  *  - master: XEQ CPMr Ex.1.3.1-25 pp.139 (solution pp.510) [cgh]
  *  - double/indirect-indexing: Ex.2.2.2-5 (solution pp.541) [b]
@@ -39,6 +46,8 @@
  *              more work on interrupt handling
  *              added MIPS rating
  *              multiply defined asm literals
+ *              fixed MUL/DIV timing
+ *              added FP routine skeletons + timing + decoding
  *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
  *              fixed save CORE
  *              added SLB, SRB, JrE, JrO, CPMr
@@ -513,6 +522,43 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	if (prem) *prem = ma;
 }
 
+
+/* ============== F P  A R I T H M E T I C ================== */
+
+Word fpADD(Word u, Word w)
+{
+    return UNDEF;
+}
+
+Word fpSUB(Word u, Word w)
+{
+    return UNDEF;
+}
+
+Word fpMPY(Word u, Word w)
+{
+    return UNDEF;
+}
+
+Word fpDIV(Word u, Word w)
+{
+    return UNDEF;
+}
+
+Word fpFLOT(Word u)
+{
+    return UNDEF;
+}
+
+Word fpCMP(Word u, Word w)
+{
+    return UNDEF;
+}
+
+Word fpFIX(Word u)
+{
+    return UNDEF;
+}
 
 
 /* ============== M A C H I N E  S T A T E ================== */
@@ -2690,6 +2736,7 @@ int Asm(const char *nm)
 
 void decode(Word C, Word F)
 {
+    static char *fpops[] = { "FADD", "FSUB", "FMUL", "FDIV" };
 	static char *regnames = "A123456X";
 	static char *mnemos[] = {
 		/*000*/" NOP ADD SUB MUL DIV \010xxx\011xxxMOVE",
@@ -2710,6 +2757,15 @@ void decode(Word C, Word F)
 	
 	mnemo[0] = '\0';
 	mnemo[4] = '\0';
+	if (6 == F) {
+    	if (RANGE(C,1,4)) {
+    	    strcpy(mnemo, fpops[C-1]);
+    	    return;
+	    } else if (56 == C) {
+    	    strcpy(mnemo, "FCMP");
+    	    return;
+	    }
+	}
 	s = mnemos[C / 8];
 	if (' ' == *s) {
 		s++;
@@ -2945,28 +3001,72 @@ int Step(void)
 	case 0: /*NOP*/
 		break;
 	case 1: /*ADD*/
-        if (CheckMemRead(M) || GetV(M, F, &w))
-            return 1;
-		w = smADD(rA, w); if (CY) OT = CY;
-		if (!MAG(w)) w += SIGN(rA);
-		rA = w;
+	    if (CheckMemRead(M))
+	        return 1;
+	    if (6 == F) {
+    	    if (CheckFloatOption())
+    	        return 1;
+            rA = fpADD(rA, MemRead(M));
+    	    Tyme += 2; TIMER += 2;
+    	    return FieldError(F);
+	    } else {
+            if (GetV(M, F, &w)) {
+                return 1;
+            }
+    		w = smADD(rA, w); if (CY) OT = CY;
+    		if (!MAG(w)) w += SIGN(rA);
+    		rA = w;
+		}
 		break;
 	case 2: /*SUB*/
-        if (CheckMemRead(M) || GetV(M, F, &w))
-            return 1;
-		rA = smSUB(rA, w); if (CY) OT = CY;
+	    if (CheckMemRead(M))
+	        return 1;
+	    if (6 == F) {
+    	    if (CheckFloatOption())
+    	        return 1;
+            rA = fpSUB(rA, MemRead(M));
+    	    Tyme += 2; TIMER += 2;
+    	    return FieldError(F);
+	    } else {
+            if (GetV(M, F, &w)) {
+                return 1;
+            }
+    		rA = smSUB(rA, w); if (CY) OT = CY;
+        }
 		break;
 	case 3: /*MUL*/
-        if (CheckMemRead(M) || GetV(M, F, &w))
-            return 1;
-		smMPY(&rA, &rX, rA, w);
-		Tyme += 9; TIMER += 9;
+	    if (CheckMemRead(M))
+	        return 1;
+	    if (6 == F) {
+    	    if (CheckFloatOption())
+    	        return 1;
+            rA = fpMPY(rA, MemRead(M));
+    	    Tyme += 7; TIMER += 7;
+    	    return FieldError(F);
+	    } else {
+            if (GetV(M, F, &w)) {
+                return 1;
+            }
+    		smMPY(&rA, &rX, rA, w);
+    		Tyme += 8; TIMER += 8;
+		}
 		break;
 	case 4: /*DIV*/
-        if (CheckMemRead(M) || GetV(M, F, &w))
-            return 1;
-		smDIV(&rA, &rX, rA, rX, w);
-		Tyme += 11; TIMER += 11;
+	    if (CheckMemRead(M))
+	        return 1;
+	    if (6 == F) {
+    	    if (CheckFloatOption())
+    	        return 1;
+            rA = fpADD(rA, MemRead(M));
+    	    Tyme += 9; TIMER += 9;
+    	    return FieldError(F);
+	    } else {
+            if (GetV(M, F, &w)) {
+                return 1;
+            }
+    		smDIV(&rA, &rX, rA, rX, w);
+    		Tyme += 10; TIMER += 10;
+		}
 		break;
 	case 5:
 		{	Word signA, signX;
@@ -3000,10 +3100,14 @@ int Step(void)
             case  6: /*FLOT*/
                 if (CheckFloatOption())
                     return 1;
+                rA = fpFLOT(rA);
+                Tyme += 2; TIMER += 2;
                 return FieldError(F);
             case  7: /*FIX*/
                 if (CheckFloatOption())
                     return 1;
+                rA = fpFIX(rA);
+                Tyme += 2; TIMER += 2;
                 return FieldError(F);
             case  8: /*NEG*/
                 if (CheckBinaryOption())
@@ -3244,12 +3348,23 @@ int Step(void)
 		}
 		break;
 	case 56: case 57: case 58: case 59: case 60: case 61: case 62: case 63: /*CMPr*/
-        if (CheckMemRead(M) || GetV(M, F, &w))
-            return 1;
-		w = smSUB(field(reg[C - 56], F), w);
-		if (SIGN(w)) CI = LESS;
-		else if (!MAG(w)) CI = EQUAL;
-		else CI = GREATER;
+	    if (CheckMemRead(M))
+    	    return 1;
+	    if (6 == F) {
+    	    if (CheckFloatOption())
+    	        return 1;
+            w = fpCMP(rA, MemRead(M));
+    	    Tyme += 2; TIMER += 2;
+    	    return FieldError(F);
+	    } else {
+            if (GetV(M, F, &w)) {
+                return 1;
+            }
+    		w = smSUB(field(reg[C - 56], F), w);
+    		if (SIGN(w)) CI = LESS;
+    		else if (!MAG(w)) CI = EQUAL;
+    		else CI = GREATER;
+		}
 		break;
 	}
     P++;
