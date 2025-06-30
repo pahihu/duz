@@ -105,6 +105,16 @@ unsigned CurrentMS(void)
     gettimeofday(&tv, NULL);
     return tv.tv_sec * 1000 + (tv.tv_usec + 500) / 1000;
 }
+#elif defined(WIN32)
+#include <sys/types.h>
+#include <sys/timeb.h>
+unsigned CurrentMS(void)
+{
+    struct _timeb tb;
+    
+    _ftime(&tb);
+    return tb.time * 1000 + tb.millitm;
+}
 #else
 #include <time.h>
 unsigned CurrentMS(void)
