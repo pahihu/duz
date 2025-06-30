@@ -11,36 +11,19 @@ inp5=$(echo $asminp | cut -c -5)
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo
-echo "*** $TS ASMLG TASK STARTED ************************"
+echo "*** $TS ASML TASK STARTED *************************"
 echo
 echo "==============================================================="
 echo "ASSEMBLY LISTING: $inp.prn"
 echo "      TRANS DECK: $inp5.tra"
-echo "    TRACE OUTPUT: $inp.tre"
-echo "     PRINTER LOG: $inp.log"
 echo "==============================================================="
 echo
 
 rm -f $inp5.tra
 ./mix -a $asminp -p 2>&1 | tee $inp.prn
 
-rm -f printer
-cat cardload.dek $inp5.tra >reader
-
-if [ ! -z $MIXTRACE ];
-then
-  ./mix -t $MIXTRACE -g > $inp.tre 2>&1
-else
-  ./mix -g 2>&1 | tee $inp.tre
-fi
-
-if [ -s printer ];
-then
-  cp printer $inp.log
-fi
-
 TS=$(date +%Y%m%d-%H%M%S)
 echo
-echo "*** $TS ASMLG TASK ENDED **************************"
+echo "*** $TS ASML TASK ENDED **************************"
 echo
 
