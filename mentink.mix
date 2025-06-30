@@ -1,0 +1,12 @@
+*...+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8
+*LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
+           ORIG 1000
+START      LD1  C1
+1H         LD2  C1
+2H         DEC2 1
+           J2P  2B
+           DEC1 1
+           J1P  1B
+           HLT  *
+C1         CON  4000
+           END  START

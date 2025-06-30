@@ -14,7 +14,8 @@
  *  TODO
  *  ====
  *  - floating-point attachment
- *  - assembler: free fmt
+ *  - asm literals symbol or value equivalence?
+ *  - asm: free fmt
  *
  *  Instruction extensions
  *  ======================
@@ -36,6 +37,8 @@
  *  250630AP    added memory access checking
  *              fixed MOVE, Go button
  *              reworked blkRead/blkWrite
+ *              more work on interrupt handling
+ *              added MIPS rating
  *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
  *              fixed save CORE
  *              added SLB, SRB, JrE, JrO, CPMr
@@ -100,7 +103,7 @@ unsigned CurrentMS(void)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return tv.tv_sec + (tv.tv_usec + 500) / 1000;
+    return tv.tv_sec * 1000 + (tv.tv_usec + 500) / 1000;
 }
 #else
 #include <time.h>
@@ -185,6 +188,7 @@ FILE *LPT;
 unsigned Tyme, IdleTyme, InstCount, TraceCount, ElapsedMS;
 unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
+int WaitRTI;
 Toggle CY;
 Toggle TRACEOP, TRACEIO, TRACEA;
 Toggle XEQTING;
@@ -215,20 +219,10 @@ Word MemRead(Word a);
 #define	DEV_PT 	8
 
 typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_BRK} EventType;
-
-typedef struct __Event {
-    EventType what;
-    unsigned when;
-    unsigned LOC;
-    unsigned M;
-    MachineState S;
-    int next;
-} Event;
-
-Event *events;
-int EventH;
+int EventH, PendingH;
 
 void Schedule(unsigned delta, int u, EventType what, Word M);
+void ScheduleINT(int u);
 
 /* ============== S M  A R I T H M E T I C ================== */
 
@@ -586,6 +580,7 @@ void SaveSTATE(Word loc)
 	int i;
 	Word w;
 	
+    ASSERT(CONFIG & MIX_INTERRUPT);
 	ASSERT(IsNormal());
 	
 	for (i = 0; i < 8; i++)
@@ -606,6 +601,7 @@ void RestoreSTATE(void)
 	Word w;
 	Byte f;
 	
+    ASSERT(CONFIG & MIX_INTERRUPT);
 	ASSERT(IsControl());
 	
 	w  = ctlmem[1];
@@ -618,10 +614,11 @@ void RestoreSTATE(void)
 		reg[i] = ctlmem[i + 1];
 
 	STATE = S_NORMAL;
+    WaitRTI = 1;
 }
 
 
-int HasBinaryOption(void)
+int CheckBinaryOption(void)
 {
     if (0 == (CONFIG & MIX_BINARY)) {
         fprintf(stderr, "-E-MIX: NOT A BINARY MIX\n");
@@ -630,7 +627,7 @@ int HasBinaryOption(void)
     return 0;
 }
 
-int HasFloatOption(void)
+int CheckFloatOption(void)
 {
     if (0 == (CONFIG & MIX_FLOAT)) {
         fprintf(stderr, "-E-MIX: NO FLOATING POINT ATTACHMENT INSTALLED \n");
@@ -639,7 +636,7 @@ int HasFloatOption(void)
     return 0;
 }
 
-int HasInterruptOption(void)
+int CheckInterruptOption(void)
 {
     if (0 == (CONFIG & MIX_INTERRUPT)) {
         fprintf(stderr, "-E-MIX: NO INTERRUPT FACILITY INSTALLED\n");
@@ -648,7 +645,7 @@ int HasInterruptOption(void)
     return 0;
 }
 
-int HasMasterOption(void)
+int CheckMasterOption(void)
 {
     if (0 == (CONFIG & MIX_MASTER)) {
         fprintf(stderr, "-E-MIX: NOT A MIXMASTER\n");
@@ -795,11 +792,23 @@ void MemSet(char *s, int ch, int len)
 /* ================== I N P U T / O U T P U T =============== */
 
 typedef struct __Device {
+    unsigned Prio;      /* fixed INT priority */
+    Word IntAddr;       /* fixed INT address  */
+
 	FILE *fd, *fdout;
 	unsigned pos;
 	unsigned max_pos;
-	unsigned evt;
-	Toggle pending;
+	unsigned evt;       /* busy until */
+
+    EventType what;
+    unsigned when;      /* event time */
+    unsigned LOC;       /* source loc */
+    unsigned M;         /* param      */
+    MachineState S;     /* init STATE */
+
+    Toggle pending;     /* pending INT */
+
+    int evtNext, intNext;
 } Device;
 
 #define IO_SLOTS    21
@@ -814,7 +823,6 @@ typedef struct __Device {
  */
 int MAX_DEVS;
 Device *devs;
-int NPending;
 
 /* 
 Input/Output
@@ -942,33 +950,33 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
 
     ASSERT(0 <= EventH && EventH <= MAX_DEVS);
 
-    ASSERT(0 == events[u].next);
-    ASSERT(DO_NOTHING == events[u].what);
+    ASSERT(0 == devs[u].evtNext);
+    ASSERT(DO_NOTHING == devs[u].what);
 
     /* unit is busy until delta */
     devs[u].evt = Tyme + delta;
 
     /* do actual I/O at delta/2 */
     when = Tyme + delta / 2;
-    events[u].what = what;
-    events[u].when = when;
-    events[u].LOC = P;
-    events[u].M = M;
-    events[u].S = STATE;
+    devs[u].what = what;
+    devs[u].when = when;
+    devs[u].LOC = P;
+    devs[u].M = M;
+    devs[u].S = STATE;
 
     i = EventH;
-    while (i && events[i-1].when <= when) {
+    while (i && devs[i-1].when <= when) {
     	p = i;
-        i = events[i-1].next;
+        i = devs[i-1].evtNext;
     }
     if ((0 == EventH) || (EventH == i)) { /* empty or head */
-        events[u].next = EventH;
+        devs[u].evtNext = EventH;
         EventH = u+1;
-    } else if (0 == events[p-1].next) /* tail */
-        events[p-1].next = u+1;
+    } else if (0 == devs[p-1].evtNext) /* tail */
+        devs[p-1].evtNext = u+1;
     else { /* middle */
-        events[p-1].next = u+1;
-        events[u].next = i;
+        devs[p-1].evtNext = u+1;
+        devs[u].evtNext = i;
     }
     
     if (TRACEIO) {
@@ -977,8 +985,51 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
 	    while (i) {
 		    p = i-1;
 			fprintf(stderr, "-I-MIX: %07u LOC=%04o DEV=%02o/%04o %s\n",
-		   		events[p].when, events[p].LOC, p, events[p].M, sio[events[p].what]);
-		    i = events[p].next;
+                devs[p].when, devs[p].LOC, p, devs[p].M, sio[devs[p].what]);
+		    i = devs[p].evtNext;
+	    }
+	    fprintf(stderr, "-I-MIX: *************************************\n");
+    }
+}
+
+void ScheduleINT(int u)
+{
+    int i, p;
+    unsigned prio;
+
+    ASSERT(CONFIG & MIX_INTERRUPT);
+
+    ASSERT(0 <= PendingH && PendingH <= MAX_DEVS);
+
+    ASSERT(0 == devs[u].intNext);
+
+    devs[u].when = Tyme;
+    devs[u].pending = ON;
+
+    prio = devs[u].Prio;
+
+    i = PendingH;
+    while (i && devs[i-1].Prio <= prio) {
+        p = i;
+        i = devs[i-1].intNext;
+    }
+    if ((0 == PendingH) || (PendingH == i)) { /* empty or head */
+        devs[u].intNext = PendingH;
+        PendingH = u+1;
+    } else if (0 == devs[p-1].intNext) /* tail */
+        devs[p-1].intNext = u+1;
+    else { /* middle */
+        devs[p-1].intNext = u+1;
+        devs[u].intNext = i;
+    }
+
+    if (TRACEIO) {
+	    fprintf(stderr, "-I-MIX: ************ PENDING INTS ***********\n");
+	    i = PendingH;
+	    while (i) {
+		    p = i-1;
+			fprintf(stderr, "-I-MIX: %d DEV=%02o %s %c%05o\n", devs[p].Prio, p, sio[devs[p].what], PLUS(devs[p].IntAddr), MAG(devs[p].IntAddr));
+		    i = devs[p].intNext;
 	    }
 	    fprintf(stderr, "-I-MIX: *************************************\n");
     }
@@ -991,33 +1042,24 @@ void doIO(int u)
     EventType what;
 
     ASSERT(EventH != u+1);
-    ASSERT(0 == events[u].next);
-    ASSERT(DO_NOTHING != events[u].what);
+    ASSERT(0 == devs[u].evtNext);
+    ASSERT(DO_NOTHING != devs[u].what);
 
-    LOC = events[u].LOC;
-    M = events[u].M;
+    LOC = devs[u].LOC;
+    M = devs[u].M;
     x = devType(u);
+	what = devs[u].what;
 
 	if (TRACEIO)
-        fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, UNO(u), M, sio[events[u].what]);
+        fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, UNO(u), M, sio[what]);
     	
-	what = events[u].what;
+    devs[u].what = DO_NOTHING;
+
     switch (what) {
     case DO_NOTHING:
         break;
     case DO_IOC:
-        if (DEV_RTC == u) {
-            if (MAG(RTC)) {
-                RTC = smSUB(RTC, 1);
-                if (MAG(RTC)) {
-                    Schedule(1000, u, DO_IOC, M);
-                } else {
-                    goto DoBrk;
-                }
-            }
-        } else {
-            blkSeek(u, M);
-        }
+        blkSeek(u, M);
         break;
     case DO_IN:
         blkRead(u, M, IOchar[x].a2m);
@@ -1026,14 +1068,15 @@ void doIO(int u)
         blkWrite(u, M, IOchar[x].m2a);
         break;
 	case DO_BRK:
-DoBrk:
-		ASSERT(!devs[u].pending);
-		devs[u].pending = ON; NPending++;
+        if (devs[u].pending) {
+            fprintf(stderr, "-W-MIX: UNO=%02o PENDING INTERRUPT SINCE %08d\n", UNO(u), devs[u].when);
+        } else {
+            ScheduleINT(u);
+        }
 		break;
     }
-    events[u].what = DO_NOTHING;
     
-    if (S_CONTROL == events[u].S && u && DO_BRK != what) {
+    if (S_CONTROL == devs[u].S && u && DO_BRK != what) {
 	    Schedule(devs[u].evt - Tyme, u, DO_BRK, M);
     }
 }
@@ -1042,35 +1085,30 @@ void DoEvents(void)
 {
 	int u;
 	
-	while (EventH && events[EventH-1].when <= Tyme) {
+	while (EventH && devs[EventH-1].when <= Tyme) {
 		u = EventH-1;
-		EventH = events[u].next;
-		events[u].next = 0;
+		EventH = devs[u].evtNext;
+		devs[u].evtNext = 0;
 		doIO(u);
 	}
 }
 
-void DoPending(void)
+void DoInterrupts(void)
 {
-	int i, u, x, prio;
+	int u;
 
-	ASSERT(IsNormal());
-
-	u = 0; prio = 999;
-	for (i = 0; i < MAX_DEVS; i++) {
-		if (devs[i].pending) {
-			x = devType(i);
-			if (x < prio) {
-				prio = x;
-				u = i + 1;
-			}
-		}
-	}
-	if (u--) {
-		NPending--;
-		devs[u].pending = OFF;
-		SaveSTATE(u ? INT_ADDR_DEV_BASE + u : INT_ADDR_RTC);
-	}
+    if (IsNormal()) {
+        if (WaitRTI) {
+            WaitRTI--;
+        } else if (PendingH) {
+            ASSERT(CONFIG & MIX_INTERRUPT);
+            u = PendingH - 1;
+            ASSERT(devs[u].pending);
+            PendingH = devs[u].intNext;
+            devs[u].intNext = 0;
+		    SaveSTATE(devs[u].IntAddr);
+        }
+    }
 }
 
 int devType(int u)
@@ -1130,7 +1168,7 @@ int devBusy(int u)
         if (Tyme >= WaitEvt)
             Awake();
     }
-    return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt) || (devs[u].pending);
+    return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt);
 }
 
 int IsCRLF(int ch)
@@ -1306,6 +1344,17 @@ void blkSeek(int u, unsigned pos)
 {
 	int x;
 	
+    if (DEV_RTC == u) {
+        if (MAG(RTC)) {
+            RTC = smSUB(RTC, 1);
+            if (MAG(RTC)) {
+                Schedule(1000, u, DO_IOC, 0);
+            } else {
+                ScheduleINT(u);
+            }
+        }
+        return;
+    }
 	if (pos != devs[u].pos) {
 		x = devType(u);
     	if (stdin != devs[u].fd) {
@@ -1850,9 +1899,6 @@ int GetV(Word M, Byte F, Word *ret)
 {
     if (L(F) > 5 || R(F) > 5 || L(F) > R(F))
         return FieldError(F);
-    if (CheckMemRead(M)) {
-        return 1;
-    }
     *ret = field(MemRead(M),F);
     return 0;
 }
@@ -2593,8 +2639,6 @@ int Asm(const char *nm)
     int n, failed;
     FILE *fd;
 
-    STATE = S_NORMAL;
-
     strcpy(path, nm);
     fd = fopen(path, "rt");
     strtoupper(path);
@@ -2887,25 +2931,25 @@ int Step(void)
 	case 0: /*NOP*/
 		break;
 	case 1: /*ADD*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		w = smADD(rA, w); if (CY) OT = CY;
 		if (!MAG(w)) w += SIGN(rA);
 		rA = w;
 		break;
 	case 2: /*SUB*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		rA = smSUB(rA, w); if (CY) OT = CY;
 		break;
 	case 3: /*MUL*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		smMPY(&rA, &rX, rA, w);
 		Tyme += 9; TIMER += 9;
 		break;
 	case 4: /*DIV*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		smDIV(&rA, &rX, rA, rX, w);
 		Tyme += 11; TIMER += 11;
@@ -2925,35 +2969,35 @@ int Step(void)
 			case  2: /*HLT*/
 				return Halt();
             case  3: /*AND*/
-                if (HasBinaryOption() || CheckMemRead(M))
+                if (CheckBinaryOption() || CheckMemRead(M))
                     return 1;
                 rA = SIGN(rA) + (MAG(rA) & MAG(MemRead(M)));
                 break;
             case  4: /*OR*/
-                if (HasBinaryOption() || CheckMemRead(M))
+                if (CheckBinaryOption() || CheckMemRead(M))
                     return 1;
                 rA = SIGN(rA) + (MAG(rA) | MAG(MemRead(M)));
                 break;
             case  5: /*XOR*/
-                if (HasBinaryOption() || CheckMemRead(M))
+                if (CheckBinaryOption() || CheckMemRead(M))
                     return 1;
                 rA = SIGN(rA) + (MAG(rA) ^ MAG(MemRead(M)));
                 break;
             case  6: /*FLOT*/
-                if (HasFloatOption())
+                if (CheckFloatOption())
                     return 1;
                 return FieldError(F);
             case  7: /*FIX*/
-                if (HasFloatOption())
+                if (CheckFloatOption())
                     return 1;
                 return FieldError(F);
             case  8: /*NEG*/
-                if (HasBinaryOption())
+                if (CheckBinaryOption())
                     return 1;
                 rA = SIGN(rA) + MAG(~MAG(rA));
                 break;
             case  9: /*INT*/
-                if (HasInterruptOption())
+                if (CheckInterruptOption())
                     return 1;
                 ASSERT(IsNormal() || IsControl());
                 if (IsNormal()) {
@@ -2964,12 +3008,12 @@ int Step(void)
                 Tyme++;
                 return FieldError(F);
             case 10: /*XCH*/
-                if (HasBinaryOption())
+                if (CheckBinaryOption())
                     return 1;
                 w = rA; rA = rX; rX = w;
                 break;
             case 11: /*XEQ*/
-                if (HasMasterOption())
+                if (CheckMasterOption())
                     return 1;
                 if (XEQTING) {
                     fprintf(stderr, "-E-MIX: LOC=%04o NESTED XEQ\n", P);
@@ -3014,13 +3058,13 @@ int Step(void)
 					rA += signA; rX += signX;
 					break;
                 case 6: /*SLB*/
-                    if (HasBinaryOption())
+                    if (CheckBinaryOption())
                         return 1;
 					smSLAX(&rA, &rX, MAG(rA), MAG(rX), M, 0);
                     rA += signA; rX += signX;
                     break;
                 case 7: /*SRB*/
-                    if (HasBinaryOption())
+                    if (CheckBinaryOption())
                         return 1;
 					smSRAX(&rA, &rX, MAG(rA), MAG(rX), M, 0);
                     rA += signA; rX += signX;
@@ -3042,7 +3086,7 @@ int Step(void)
 		}
 		break;
 	case  8: case  9: case 10: case 11: case 12: case 13: case 14: case 15: /*LDr*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		x = C - 8;
 		reg[x] = w;
@@ -3050,7 +3094,7 @@ int Step(void)
             return 1;
 		break;
 	case 16: case 17: case 18: case 19: case 20: case 21: case 22: case 23: /*LDrN*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		x = C - 16;
 		reg[x] = smNEG(w);
@@ -3138,11 +3182,11 @@ int Step(void)
 		case 4: /*JrNZ*/cond = MAG(w); break;
 		case 5: /*JrNP*/cond = !MAG(w) || SIGN(w); break;
         case 6: /*JrE*/
-            if (HasBinaryOption())
+            if (CheckBinaryOption())
                 return 1;
             cond = 0 == (MAG(w) & 1); break;
         case 7: /*JrO*/
-            if (HasBinaryOption())
+            if (CheckBinaryOption())
                 return 1;
             cond = 1 == (MAG(w) & 1); break;
 		default:
@@ -3174,7 +3218,7 @@ int Step(void)
             reg[x] = smNEG(M);
 			break;
         case 4: /*CPMr*/
-            if (HasMasterOption())
+            if (CheckMasterOption())
                 return 1;
 		    w = smSUB(reg[x], M);
 		    if (SIGN(w)) CI = LESS;
@@ -3186,7 +3230,7 @@ int Step(void)
 		}
 		break;
 	case 56: case 57: case 58: case 59: case 60: case 61: case 62: case 63: /*CMPr*/
-        if (GetV(M, F, &w))
+        if (CheckMemRead(M) || GetV(M, F, &w))
             return 1;
 		w = smSUB(field(reg[C - 56], F), w);
 		if (SIGN(w)) CI = LESS;
@@ -3215,6 +3259,7 @@ void Run(Word p)
         OLDP = P;
         Step();
         DoEvents();
+        DoInterrupts();
         if (IsWaiting())
             P = OLDP;
         else {
@@ -3225,6 +3270,7 @@ void Run(Word p)
         /* normal HLT, process I/O events */
         while (EventH) {
             DoEvents(); Tyme++; IdleTyme++;
+            DoInterrupts();
         }
         /* wait until all devs are ready */
         evt = 0;
@@ -3306,8 +3352,7 @@ void InitMemory(void)
     mem  = malloc((MAX_MEM + 3) * sizeof(Word));
     freq = malloc((MAX_MEM + 3) * sizeof(unsigned short));
     devs = malloc(MAX_DEVS * sizeof(Device));
-    events = malloc(MAX_DEVS * sizeof(Event));
-    if (NULL == mem || NULL == freq || NULL == devs || events == NULL) {
+    if (NULL == mem || NULL == freq || NULL == devs) {
         goto ErrOut;
     }
 	for (i = 0; i < MAX_MEM + 3; i++) {
@@ -3398,14 +3443,16 @@ void Init(void)
 
     /* --- units --- */
 	for (i = 0; i < MAX_DEVS; i++) {
+        devs[i].Prio = devType(i);
+		devs[i].IntAddr = smNEG(i ? INT_ADDR_DEV_BASE + i : INT_ADDR_RTC);
 		devs[i].fd = devs[i].fdout = NULL;
-		devs[i].pending = OFF;
-        events[i].what = DO_NOTHING;
-        events[i].next = 0;
+        devs[i].what = DO_NOTHING;
+        devs[i].pending = OFF;
+        devs[i].evtNext = devs[i].intNext = 0;
     }
     EventH = 0;
+    PendingH = 0;
     WaitEvt = 0;
-    NPending = 0;
 
     if (CONFIG & MIX_CORE)
         InitCore();
@@ -3647,7 +3694,7 @@ int main(int argc, char*argv[])
         fprintf(stderr, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
         fprintf(stderr, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
 
-        fprintf(stderr, "                              TOTAL ELAPSED TIME:              %f (%.1f MIPS)\n", elapsedS, (InstCount / elapsedS) / 1000000.0);
+        fprintf(stderr, "                              TOTAL ELAPSED TIME:              %lf (%.1lf MIPS)\n", elapsedS, (InstCount / elapsedS) / 1000000.0);
     }
 
 	return 0;
