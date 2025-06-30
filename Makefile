@@ -1,6 +1,8 @@
 CC = gcc
-CFLAGS = -Wall -pedantic -g
-LDFLAGS = -g
+# OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
+OPT = -g
+CFLAGS = -Wall -pedantic $(OPT)
+LDFLAGS = $(OPT)
 SRCS = mix.c
 OBJS = $(SRCS:.c=.o)
 

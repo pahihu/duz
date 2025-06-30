@@ -13,8 +13,8 @@
  *
  *  TODO
  *  ====
+ *  - floating-point attachment
  *  - assembler: free fmt
- *  - simplify disassembler mnemonics
  *
  *  Instruction extensions
  *  ======================
@@ -33,6 +33,9 @@
  *
  *  History:
  *  ========
+ *  250630AP    added memory access checking
+ *              fixed MOVE, Go button
+ *              reworked blkRead/blkWrite
  *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
  *              fixed save CORE
  *              added SLB, SRB, JrE, JrO, CPMr
@@ -90,6 +93,22 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>
+
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/time.h>
+unsigned CurrentMS(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + (tv.tv_usec + 500) / 1000;
+}
+#else
+#include <time.h>
+unsigned CurrentMS(void)
+{
+    return time(NULL) * 1000;
+}
+#endif
 
 #define IGNORE_VALUE(x) (void)((x)+1)
 
@@ -163,7 +182,7 @@ Toggle TRANS, LNKLD, DUMP, STAN;
 char TRANSNM[5+1];
 
 FILE *LPT;
-unsigned Tyme, IdleTyme, InstCount, TraceCount;
+unsigned Tyme, IdleTyme, InstCount, TraceCount, ElapsedMS;
 unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 Toggle CY;
@@ -182,6 +201,34 @@ Toggle XEQTING;
 #define ZERO reg[9]
 
 
+void MemWrite(Word a, int f, Word w);
+Word MemRead(Word a);
+
+#define DEV_RTC	0
+#define	DEV_MT 	1
+#define	DEV_DK 	2
+#define DEV_DR 	3
+#define	DEV_CR 	4
+#define	DEV_CP 	5
+#define	DEV_LP 	6
+#define DEV_TT 	7
+#define	DEV_PT 	8
+
+typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_BRK} EventType;
+
+typedef struct __Event {
+    EventType what;
+    unsigned when;
+    unsigned LOC;
+    unsigned M;
+    MachineState S;
+    int next;
+} Event;
+
+Event *events;
+int EventH;
+
+void Schedule(unsigned delta, int u, EventType what, Word M);
 
 /* ============== S M  A R I T H M E T I C ================== */
 
@@ -342,6 +389,11 @@ Word smADD(Word x, Word y)
 	if (MAG(y) >= MAG(x))
 		return MAG(y) - MAG(x);
 	return SIGN(x) + MAG(x) - MAG(y);
+}
+
+void smINC(Word *pw)
+{
+    *pw = smADD(*pw, 1);
 }
 
 Word smSUB(Word x, Word y)
@@ -519,7 +571,7 @@ int IsControl(void)
 	return S_CONTROL == STATE;
 }
 
-int Waiting(void)
+int IsWaiting(void)
 {
     return S_WAIT == STATE;
 }
@@ -569,38 +621,38 @@ void RestoreSTATE(void)
 }
 
 
-int CheckBinary(void)
+int HasBinaryOption(void)
 {
     if (0 == (CONFIG & MIX_BINARY)) {
         fprintf(stderr, "-E-MIX: NOT A BINARY MIX\n");
-        return 1;
+        return Stop();
     }
     return 0;
 }
 
-int CheckFloat(void)
+int HasFloatOption(void)
 {
     if (0 == (CONFIG & MIX_FLOAT)) {
         fprintf(stderr, "-E-MIX: NO FLOATING POINT ATTACHMENT INSTALLED \n");
-        return 1;
+        return Stop();
     }
     return 0;
 }
 
-int CheckInterrupt(void)
+int HasInterruptOption(void)
 {
     if (0 == (CONFIG & MIX_INTERRUPT)) {
         fprintf(stderr, "-E-MIX: NO INTERRUPT FACILITY INSTALLED\n");
-        return 1;
+        return Stop();
     }
     return 0;
 }
 
-int CheckMaster(void)
+int HasMasterOption(void)
 {
     if (0 == (CONFIG & MIX_MASTER)) {
         fprintf(stderr, "-E-MIX: NOT A MIXMASTER\n");
-        return 1;
+        return Stop();
     }
     return 0;
 }
@@ -614,7 +666,7 @@ int CheckAddr(Word a, char *msg)
 	int ret;
 	
 	ret = 0;
-	if (SIGN(a) || MAG(a) > MAX_MEM+2) {
+	if ((!(CONFIG & MIX_INTERRUPT) && SIGN(a)) || MAG(a) > MAX_MEM+2) {
 		ret = 1;
 		if (msg) {
 			fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o INV.MEMORY ADDRESS %s\n", P, PLUS(a), MAG(a), msg);
@@ -624,17 +676,52 @@ int CheckAddr(Word a, char *msg)
     return ret;
 }
 
-#define CheckMemRead(a)     CheckAddr(a, "MEMORY READ")
+int CheckMemRead(Word a)
+{
+    ASSERT(IsNormal() || IsControl());
+
+    if (CheckAddr(a, "MEMORY READ"))
+        return 1;
+
+    return 0;
+}
+
+int CheckAccess(Word a)
+{
+    if (SIGN(a) && IsNormal()) {
+        fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o ILLEGAL ACCESS\n", P, PLUS(a), MAG(a));
+        return Stop();
+    }
+    return 0;
+}
+
+int CheckFetch(Word a)
+{
+    ASSERT(IsNormal() || IsControl() || IsWaiting());
+
+    if (CheckAccess(a) || CheckAddr(a, "MEMORY FETCH"))
+        return 1;
+
+    return 0;
+}
 
 Word MemRead(Word a)
 {
-	ASSERT(IsNormal() || IsControl() || Waiting());
-	
+    Word signA;
+
 	Tyme++; TIMER++;
-	return IsControl() ? ctlmem[MAG(a)] : mem[MAG(a)];
+    signA = SIGN(a); a = MAG(a);
+	return signA ? ctlmem[a] : mem[a];
 }
 
-#define CheckMemWrite(a)    CheckAddr(a, "MEMORY WRITE")
+int CheckMemWrite(Word a)
+{
+    ASSERT(IsNormal() || IsControl());
+
+    if (CheckAccess(a) || CheckAddr(a, "MEMORY WRITE"))
+        return 1;
+    return 0;
+}
 
 Word WriteField(Word v, int f, Word w)
 {
@@ -659,6 +746,22 @@ Word WriteField(Word v, int f, Word w)
 	return vv + (~mask & v);
 }
 
+void MemWrite(Word a, int f, Word w)
+{
+    Word signA;
+
+    Tyme++; TIMER++;
+    signA = SIGN(a); a = MAG(a);
+    if (signA) {
+        ctlmem[a] = WriteField(ctlmem[a], f, w);
+        if (ADDR_RTC == a) {
+            Schedule(1000U, DEV_RTC, DO_IOC, 0);
+        }
+    } else {
+        mem[a] = WriteField(mem[a], f, w);
+    }
+}
+
 int CheckMemMove(Word src, Word dst, int n)
 {
 	return (CheckAddr(src, "MOVE SOURCE")
@@ -671,10 +774,10 @@ void MemMove(Word src, Word dst, int n)
 {
 	int i;
 
-	src = MAG(src); dst = MAG(dst);
-		
-	for (i = 0; i < n; i++)
-		mem[dst++] = mem[src++];
+	for (i = 0; i < n; i++) {
+        MemWrite(dst, FULL, MemRead(src));
+        smINC(&dst); smINC(&src);
+    }
 }
 
 void MemSet(char *s, int ch, int len)
@@ -700,7 +803,8 @@ typedef struct __Device {
 } Device;
 
 #define IO_SLOTS    21
-#define UNO(x)		((x)-1)
+#define UNO(dev)    ((dev) - 1)
+#define DEVNO(u)    ((u) + 1)
 
 /*		UNO									DEVNO
  *   -: RTC									 0
@@ -777,18 +881,9 @@ Byte a2m[256], cr_a2m[256];
  *
  */
 
-#define DEV_RTC	0
-#define	DEV_MT 	1
-#define	DEV_DK 	2
-#define DEV_DR 	3
-#define	DEV_CR 	4
-#define	DEV_CP 	5
-#define	DEV_LP 	6
-#define DEV_TT 	7
-#define	DEV_PT 	8
-
 #define CARD_READER  16
-#define LP_BLOCK 24
+#define MAX_WORD_BLOCK  100
+#define MAX_CHAR_BLOCK  24
 #define LP_LINES 66
 
 #ifdef WIN32
@@ -827,24 +922,10 @@ struct {
 	{   "ptape", TXT_RWRITE,    a2m,    m2a,  1707,  14, 0, 23333,  116667,    0,   23333 },    /* DEV_PT */
 };
 
-typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_BRK} EventType;
-
-typedef struct __Event {
-    EventType what;
-    unsigned when;
-    unsigned LOC;
-    unsigned M;
-    MachineState S;
-    int next;
-} Event;
-Event *events;
-int EventH;
-
-int devIdx(int u);
+int devType(int u);
 void blkSeek(int u, unsigned pos);
 void blkRead(int u, unsigned adr, Byte *cvt);
 void blkWrite(int u, unsigned adr, char *cvt);
-
 
 static char *sio[] = {
 	"DOIO.NOP",
@@ -915,7 +996,7 @@ void doIO(int u)
 
     LOC = events[u].LOC;
     M = events[u].M;
-    x = devIdx(u);
+    x = devType(u);
 
 	if (TRACEIO)
         fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, UNO(u), M, sio[events[u].what]);
@@ -957,22 +1038,6 @@ DoBrk:
     }
 }
 
-void MemWrite(Word a, int f, Word w)
-{
-	ASSERT(IsNormal() || IsControl());
-
-	Tyme++; TIMER++;
-    a = MAG(a);
-    if (IsControl()) {
-		ctlmem[a] = WriteField(ctlmem[a], f, w);
-		if (ADDR_RTC == a) {
-			Schedule(1000U, DEV_RTC, DO_IOC, 0);
-		}
-	} else {
-        mem[a] = WriteField(mem[a], f, w);
-	}
-}
-
 void DoEvents(void)
 {
 	int u;
@@ -994,7 +1059,7 @@ void DoPending(void)
 	u = 0; prio = 999;
 	for (i = 0; i < MAX_DEVS; i++) {
 		if (devs[i].pending) {
-			x = devIdx(i);
+			x = devType(i);
 			if (x < prio) {
 				prio = x;
 				u = i + 1;
@@ -1008,7 +1073,7 @@ void DoPending(void)
 	}
 }
 
-int devIdx(int u)
+int devType(int u)
 {
 	int ret;
 
@@ -1025,24 +1090,24 @@ int devIdx(int u)
     return ret + 1;
 }
 
-Word Pack(Byte *buf, int offs)
+Word Pack(Byte *buf)
 {
 	Word w;
 	int i;
 	
 	w = 0;
 	for (i = 0; i < BYTES; i++)
-		w = (w << 6) + buf[offs + i];
+		w = (w << 6) + buf[i];
 	return w;
 }
 
 
-void UnPack(Word w, Byte *buf, int offs)
+void UnPack(Word w, Byte *buf)
 {
 	int i;
 	
 	for (i = BYTES; i >= 1; i--) {
-		buf[offs + i - 1] = BYTE(w);
+		buf[i - 1] = BYTE(w);
 		w >>= 6;
 	}
 }
@@ -1061,7 +1126,7 @@ int devStuck(int u)
 
 int devBusy(int u)
 {
-    if (Waiting()) {
+    if (IsWaiting()) {
         if (Tyme >= WaitEvt)
             Awake();
     }
@@ -1081,23 +1146,28 @@ int StripCRLF(char *s, int n)
     return n;
 }
 
-void blkRead(int u, unsigned adr, Byte *cvt)
+void blkRead(int u, Word adr, Byte *cvt)
 {
 	unsigned ret, n;
 	int i, j, x;
-    char tmp[LP_BLOCK * BYTES + 1];
-	Byte buf[LP_BLOCK * BYTES + 1];
+    Word mar, w, iobuf[MAX_WORD_BLOCK];
+    char tmp[MAX_CHAR_BLOCK * BYTES + 1];
 	unsigned Blk_size;
     char c, *ptr;
 	
-	x = devIdx(u);
+	x = devType(u);
 	Blk_size = IOchar[x].blk_size;
 	
 	devs[u].pos++;
+    ASSERT(Blk_size <= MAX_WORD_BLOCK);
 	if (NULL == cvt) {
-		ret = fread(&mem[adr], sizeof(Word), Blk_size, devs[u].fd);
+		ret = fread(&iobuf[0], sizeof(Word), Blk_size, devs[u].fd);
 		if (ret != Blk_size)
 			goto ErrOut;
+        mar = adr;
+        for (i = 0; i < Blk_size; i++) {
+            MemWrite(mar, FULL, iobuf[i]); smINC(&mar);
+        }
 		return;
 	}
 	
@@ -1110,6 +1180,7 @@ void blkRead(int u, unsigned adr, Byte *cvt)
     }
 
 	n = Blk_size * BYTES;
+    ASSERT(n < MAX_CHAR_BLOCK * BYTES);
     if (DEV_TT == x) {
         MemSet(tmp, ' ', sizeof(tmp)-1);
         ptr = fgets(tmp, sizeof(tmp), devs[u].fd);
@@ -1126,16 +1197,13 @@ void blkRead(int u, unsigned adr, Byte *cvt)
 		    goto ErrOut;
     }
 
-
-    // tmp[n] = '\0';
-    // fprintf(stderr,"{%s}\n", tmp);
-	for (i = 0; i < n; i++)
-		buf[i] = cvt[(int) tmp[i]];
-
-	j = 0;
+    mar = adr;
 	for (i = 0; i < Blk_size; i++) {
-		mem[adr + i] = Pack(buf, j);
-		j += BYTES;
+        Byte buf[BYTES];
+        for (j = 0; j < BYTES; j++)
+            buf[j] = cvt[(int) tmp[i * BYTES + j]];
+		w = Pack(buf);
+        MemWrite(mar, FULL, w); smINC(&mar);
 	}
 	return;
 ErrOut:
@@ -1143,59 +1211,77 @@ ErrOut:
 	devError(u);
 }
 
-void blkDump(int u, unsigned adr)
+void blkDump(int u, Word adr, Toggle bytes)
 {
-    int i, j, n, x;
+    int i, j, x;
     unsigned Blk_size;
-	Byte tmp[LP_BLOCK * BYTES];
+    Word mar, w;
 
-	x = devIdx(u);
+	x = devType(u);
 	Blk_size = IOchar[x].blk_size;
 
-	n = Blk_size * BYTES;
-	j = 0;
-	for (i = 0; i < Blk_size; i++) {
-		UnPack(mem[adr + i], tmp, j);
-		j += BYTES;
-	}
-    fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLK.OUT BUF=", UNO(u), adr);
-	for (i = 0; i < n; i++) {
-        fprintf(stderr, " %02o", tmp[i]);
-		// buf[i] = cvt[tmp[i]];
+    fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLOCK: ", UNO(u), adr);
+    if (bytes) {
+	    mar = adr;
+	    for (i = 0; i < Blk_size; i++) {
+            Byte tmp[BYTES];
+            w = MemRead(mar); smINC(&mar);
+		    UnPack(w, tmp);
+	        for (j = 0; j < BYTES; j++) {
+                bprint(tmp[j]);
+            }
+	    }
+    } else {
+        mar = adr;
+        for (i = 0; i < Blk_size; i++) {
+            w = MemRead(mar); smINC(&mar);
+            if (0 == (i + 1) % 10)
+                nl();
+            wprint(w);
+        }
     }
-    fprintf(stderr, "\n");
+    nl();
 }
 
 void blkWrite(int u, unsigned adr, char *cvt)
 {
 	unsigned ret, n;
 	int i, j, x;
-	Byte tmp[LP_BLOCK * BYTES];
-    char buf[LP_BLOCK * BYTES + 1 + 1];     /* + CR/LF + NUL */
+    Word mar, w;
+    char buf[MAX_CHAR_BLOCK * BYTES + 1 + 1];     /* + CR/LF + NUL */
 	unsigned Blk_size;
     FILE *fd;
 	
-	x = devIdx(u);
+	x = devType(u);
 	Blk_size = IOchar[x].blk_size;
     fd = devs[u].fdout ? devs[u].fdout : devs[u].fd;
 	
 	devs[u].pos++;
 	if (NULL == cvt) {
-		ret = fwrite(&mem[adr], sizeof(Word), Blk_size, fd);
+        Word iobuf[MAX_WORD_BLOCK];
+
+        ASSERT(Blk_size <= MAX_WORD_BLOCK);
+        mar = adr;
+        for (i = 0; i < Blk_size; i++) {
+            iobuf[i] = MemRead(mar); smINC(&mar);
+        }
+		ret = fwrite(&iobuf[0], sizeof(Word), Blk_size, fd);
 		if (ret != Blk_size)
 			goto ErrOut;
 		return;
 	}
 
 	n = Blk_size * BYTES;
-	j = 0;
+    ASSERT(n <= MAX_CHAR_BLOCK * BYTES);
+    mar = adr;
 	for (i = 0; i < Blk_size; i++) {
-		UnPack(mem[adr + i], tmp, j);
-		j += BYTES;
+        Byte tmp[BYTES];
+        w = MemRead(mar); smINC(&mar);
+		UnPack(w, tmp);
+        for (j = 0; j < BYTES; j++) {
+            buf[i * BYTES + j] = cvt[(int) tmp[j]];
+        }
 	}
-	for (i = 0; i < n; i++) {
-		buf[i] = cvt[tmp[i]];
-    }
 
     if (IOchar[x].cr) {
         buf[n++] = '\n';
@@ -1221,7 +1307,7 @@ void blkSeek(int u, unsigned pos)
 	int x;
 	
 	if (pos != devs[u].pos) {
-		x = devIdx(u);
+		x = devType(u);
     	if (stdin != devs[u].fd) {
         	unsigned blk_size = IOchar[x].blk_size * (x > DEV_DR ? 5 : sizeof(Word));
 	    	fseek(devs[u].fd, pos * blk_size, SEEK_SET);
@@ -1240,7 +1326,7 @@ int devOpen(int u)
 	if (NULL != devs[u].fd)
 		return 0;
 		
-	x = devIdx(u);
+	x = devType(u);
 
     if (DEV_TT == x) {
         devs[u].fd = stdin;
@@ -1297,7 +1383,7 @@ unsigned doIOC(int u,int *pM)
     if (TRACEIO)
 	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IOC\n", P, UNO(u), M);
 
-	x = devIdx(u);	
+	x = devType(u);	
 	if (!M) {
 		if (DEV_MT == x) {
 			M = devs[u].pos;
@@ -1362,7 +1448,7 @@ void devINP(int u, Word M)
 	char *errmsg = NULL;
     unsigned delta;
 	
-	x = devIdx(u);
+	x = devType(u);
     if (CheckAddr(M, "IN BUFFER")
         || CheckAddr(M + IOchar[x].blk_size, "IN BUFFER END"))
     {
@@ -1409,7 +1495,7 @@ void devOUT(Word u,Word M)
 	char *errmsg = NULL;
     unsigned delta;
 	
-	x = devIdx(u);
+	x = devType(u);
 	if (CheckAddr(M, "OUT BUFFER")
         || CheckAddr(M + IOchar[x].blk_size, "OUT BUFFER END"))
     {
@@ -2459,11 +2545,11 @@ int Assemble(char *line)
             MemWrite(P, FULL, w = Wvalue()); P++;
             NEEDAWS = 'W';
         } else if (!strcmp(OP, "ALF ")) {
-            Byte buf[5];
-            for (i = 0; i < 5; i++) {
+            Byte buf[BYTES];
+            for (i = 0; i < BYTES; i++) {
                 buf[i] = cr_a2m[CH]; NEXT();
             }
-            MemWrite(P, FULL, w = Pack(buf, 0)); P++;
+            MemWrite(P, FULL, w = Pack(buf)); P++;
             ADDRESS[5] = 0;
             NEEDAWS = 'W';
         }
@@ -2596,8 +2682,7 @@ void Status(Word P)
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
 	
-	P = MAG(P);
-	INST = mem[P]; w = MAG(INST);
+	INST = MemRead(P); w = MAG(INST);
 	C = BYTE(w); w >>= 6;
 	F = BYTE(w); w >>= 6;
 	I = BYTE(w); w >>= 6;
@@ -2773,7 +2858,7 @@ int Step(void)
 	Word w;
 	int cond, x;
 
-    if (CheckMemRead(P)) {
+    if (CheckFetch(P)) {
         return Stop();
 	}
 	IR = MemRead(P); w = MAG(IR);
@@ -2840,35 +2925,35 @@ int Step(void)
 			case  2: /*HLT*/
 				return Halt();
             case  3: /*AND*/
-                if (CheckBinary() || CheckMemRead(M))
+                if (HasBinaryOption() || CheckMemRead(M))
                     return 1;
                 rA = SIGN(rA) + (MAG(rA) & MAG(MemRead(M)));
                 break;
             case  4: /*OR*/
-                if (CheckBinary() || CheckMemRead(M))
+                if (HasBinaryOption() || CheckMemRead(M))
                     return 1;
                 rA = SIGN(rA) + (MAG(rA) | MAG(MemRead(M)));
                 break;
             case  5: /*XOR*/
-                if (CheckBinary() || CheckMemRead(M))
+                if (HasBinaryOption() || CheckMemRead(M))
                     return 1;
                 rA = SIGN(rA) + (MAG(rA) ^ MAG(MemRead(M)));
                 break;
             case  6: /*FLOT*/
-                if (CheckFloat())
+                if (HasFloatOption())
                     return 1;
                 return FieldError(F);
             case  7: /*FIX*/
-                if (CheckFloat())
+                if (HasFloatOption())
                     return 1;
                 return FieldError(F);
             case  8: /*NEG*/
-                if (CheckBinary())
+                if (HasBinaryOption())
                     return 1;
                 rA = SIGN(rA) + MAG(~MAG(rA));
                 break;
             case  9: /*INT*/
-                if (CheckInterrupt())
+                if (HasInterruptOption())
                     return 1;
                 ASSERT(IsNormal() || IsControl());
                 if (IsNormal()) {
@@ -2879,12 +2964,12 @@ int Step(void)
                 Tyme++;
                 return FieldError(F);
             case 10: /*XCH*/
-                if (CheckBinary())
+                if (HasBinaryOption())
                     return 1;
                 w = rA; rA = rX; rX = w;
                 break;
             case 11: /*XEQ*/
-                if (CheckMaster())
+                if (HasMasterOption())
                     return 1;
                 if (XEQTING) {
                     fprintf(stderr, "-E-MIX: LOC=%04o NESTED XEQ\n", P);
@@ -2929,13 +3014,13 @@ int Step(void)
 					rA += signA; rX += signX;
 					break;
                 case 6: /*SLB*/
-                    if (CheckBinary())
+                    if (HasBinaryOption())
                         return 1;
 					smSLAX(&rA, &rX, MAG(rA), MAG(rX), M, 0);
                     rA += signA; rX += signX;
                     break;
                 case 7: /*SRB*/
-                    if (CheckBinary())
+                    if (HasBinaryOption())
                         return 1;
 					smSRAX(&rA, &rX, MAG(rA), MAG(rX), M, 0);
                     rA += signA; rX += signX;
@@ -2980,8 +3065,9 @@ int Step(void)
 	case 34: /*JBUS*/
         if (!RANGE(F,0,MAX_DEVS-1))
             return FieldError(F);
-        devOpen(F + 1);
-		if (devBusy(F + 1)) {
+        w = DEVNO(F);
+        devOpen(w);
+		if (devBusy(w)) {
             rJ = P + 1;
 			P = M;
             return 0;
@@ -2990,28 +3076,30 @@ int Step(void)
 	case 35: /*IOC*/
 	case 36: /*IN*/
     case 37: /*OUT*/
-        if (!RANGE(F,0,MAX_DEVS-2))
+        if (!RANGE(F,0,MAX_DEVS-1))
             return FieldError(F);
-		if (devOpen(F + 1))
-			return 0;
-        if (devBusy(F + 1)) {
+        w = DEVNO(F);
+		if (devOpen(w))
+		    return 0;
+        if (devBusy(w)) {
             IdleTyme++;
-            if (!Waiting())
-                WaitFor(devs[F + 1].evt);
+            if (!IsWaiting())
+                WaitFor(devs[w].evt);
             return 0;
         }
-        ASSERT(!Waiting());
+        ASSERT(!IsWaiting());
         switch (C) {
-        case 35: devIOC(F + 1, M); break;
-		case 36: devINP(F + 1, M); break;
-		case 37: devOUT(F + 1, M); break;
+        case 35: devIOC(w, M); break;
+		case 36: devINP(w, M); break;
+		case 37: devOUT(w, M); break;
         }
 		break;
 	case 38: /*JRED*/
-        devOpen(F + 1);
-        if (!RANGE(F,0,MAX_DEVS-2))
+        if (!RANGE(F,0,MAX_DEVS-1))
             return FieldError(F);
-		if (!devBusy(F + 1)) {
+        w = DEVNO(F);
+        devOpen(w);
+		if (!devBusy(w)) {
 			rJ = P + 1;
 			P = M;
             return 0;
@@ -3050,11 +3138,11 @@ int Step(void)
 		case 4: /*JrNZ*/cond = MAG(w); break;
 		case 5: /*JrNP*/cond = !MAG(w) || SIGN(w); break;
         case 6: /*JrE*/
-            if (CheckBinary())
+            if (HasBinaryOption())
                 return 1;
             cond = 0 == (MAG(w) & 1); break;
         case 7: /*JrO*/
-            if (CheckBinary())
+            if (HasBinaryOption())
                 return 1;
             cond = 1 == (MAG(w) & 1); break;
 		default:
@@ -3086,7 +3174,7 @@ int Step(void)
             reg[x] = smNEG(M);
 			break;
         case 4: /*CPMr*/
-            if (CheckMaster())
+            if (HasMasterOption())
                 return 1;
 		    w = smSUB(reg[x], M);
 		    if (SIGN(w)) CI = LESS;
@@ -3110,23 +3198,24 @@ int Step(void)
 	return 0;
 }
 
-
 void Run(Word p)
 {
     Word OLDP;
     unsigned evt;
     int u;
+    unsigned startMS;
 
+    startMS = CurrentMS();
 	P = p; OLDP = p + 1; STATE = S_NORMAL;
 	while (Running()) {
-        if (!Waiting()) {
+        if (!IsWaiting()) {
             if (TRACE && OLDP != P)
                 Status(P);
         }
         OLDP = P;
         Step();
         DoEvents();
-        if (Waiting())
+        if (IsWaiting())
             P = OLDP;
         else {
             freq[OLDP]++; InstCount++;
@@ -3147,6 +3236,7 @@ void Run(Word p)
             Tyme += evt; IdleTyme += evt;
         }
     }
+    ElapsedMS = CurrentMS() - startMS;
 }
 
 void SaveCore(const char *path, Word *adr, int len, const char *msg)
@@ -3346,16 +3436,19 @@ void Usage(void)
 }
 
 
-void Go(int u)
+void Go(int d)
 {
     int x;
 
-    x = devIdx(u);
+    if (devOpen(d))
+        return;
 
-	if (u < 0 || u >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
+    x = devType(d);
+
+	if (d < 0 || d >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
 		Usage();
-	devINP(u, 0);
-	Tyme = devs[u].evt;
+	devINP(d, 0);
+	Tyme = devs[d].evt;
 	DoEvents();
 	Tyme = 0;
 	Run(0);
@@ -3467,7 +3560,7 @@ int main(int argc, char*argv[])
     InitOptions();
     ASMONLY = OFF; GO = OFF; u = CARD_READER;
     nasmfiles = 0;
-    
+
 	for (i = 1; i < argc; i++) {
 		arg = argv[i];
 		if ('-' != *arg) {
@@ -3544,15 +3637,17 @@ int main(int argc, char*argv[])
     if (TRANS)
         PunchTrans();
     if (GO) {
-        if (0 == devOpen(u))
-	        Go(u);
+	    Go(DEVNO(u));
     } else if (!ASMONLY)
         Run(START);
     if (DUMP)
         Stats(stderr, 4, 0);
     if (InstCount) {
+        double elapsedS = ElapsedMS / 1000.0;
         fprintf(stderr, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
         fprintf(stderr, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
+
+        fprintf(stderr, "                              TOTAL ELAPSED TIME:              %f (%.1f MIPS)\n", elapsedS, (InstCount / elapsedS) / 1000000.0);
     }
 
 	return 0;
