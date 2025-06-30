@@ -14,7 +14,6 @@
  *  TODO
  *  ====
  *  - floating-point attachment
- *  - asm literals symbol or value equivalence?
  *  - asm: free fmt
  *
  *  Instruction extensions
@@ -39,6 +38,7 @@
  *              reworked blkRead/blkWrite
  *              more work on interrupt handling
  *              added MIPS rating
+ *              multiply defined asm literals
  *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
  *              fixed save CORE
  *              added SLB, SRB, JrE, JrO, CPMr
@@ -974,7 +974,7 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     devs[u].M = M;
     devs[u].S = STATE;
 
-    i = EventH;
+    i = EventH; p = 0;
     while (i && devs[i-1].when <= when) {
     	p = i;
         i = devs[i-1].evtNext;
@@ -1018,7 +1018,7 @@ void ScheduleINT(int u)
 
     prio = devs[u].Prio;
 
-    i = PendingH;
+    i = PendingH; p = 0;
     while (i && devs[i-1].Prio <= prio) {
         p = i;
         i = devs[i-1].intNext;
@@ -2128,7 +2128,11 @@ int DefineSym(char *S, Word w, Toggle defd)
 
     if (TRACEA)
         fprintf(stderr, "-I-MIX:     DEFINE SYM '%s'\n", S);
-    LSYM = found = FindSym(S);
+    if ('=' == S[0]) {
+        LSYM = found = 0;
+    } else {
+        LSYM = found = FindSym(S);
+    }
     return DefineSymIdx(found, S, w, defd);
 }
 
@@ -2484,14 +2488,14 @@ void DefineLiterals(void)
             EC[0] = ' ';
             NEEDAWS = 'W';
             w = syms[i].A;
-            DefineSym(syms[i].S, P, ON);
+            DefineSymIdx(i+1 /*syms[i].S*/, syms[i].S, P, ON);
             PrintList(needs, w, P, syms[i].S);
             MemWrite(P, FULL, w); P++;
         } else if (!syms[i].D) {
             EC[0] = EA_UNDSYM;
             NEEDAWS = 0;
             LREF = syms[i].N;
-            PrintList(needs, w, SM_MINUS1, syms[i].S);
+            PrintList(needs, 0, SM_MINUS1, syms[i].S);
         }
     }
     EC[0] = ' ';
@@ -3316,12 +3320,14 @@ void SaveCore(const char *path, Word *adr, int len, const char *msg)
 void Finish(void)
 {
     int i;
+    FILE *fd;
 
     for (i = 0; i < MAX_DEVS; i++) {
         if (stdout == devs[i].fdout)
             fflush(devs[i].fdout);
-        if (stdin != devs[i].fd)
-            fclose(devs[i].fd);
+        fd = devs[i].fd;
+        if (NULL != fd && stdin != fd)
+            fclose(fd);
     }
 
     if (CONFIG & MIX_CORE) {

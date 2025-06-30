@@ -13,8 +13,8 @@ echo      PRINTER LOG: %1.log
 echo ===============================================================
 echo:
 
-del/q printer
-del/q %1.tra
+if exist printer del/q printer
+if exist %1.tra del/q %1.tra
 
 .\mix.exe -a %1.mix -p >%1.prn 2>&1
 
