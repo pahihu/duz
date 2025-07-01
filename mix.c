@@ -44,6 +44,7 @@
  *              refactored logging
  *              refactored options, added MIXCONFIG env.var
  *              added KIPS rating
+ *              remove DEC 026/029, MIX/360 is 64-char card code
  *  250630AP    added memory access checking
  *              fixed MOVE, Go button
  *              refactored blkRead/blkWrite
@@ -3676,7 +3677,7 @@ void InitMixToAscii(void)
         a2m[i] = cr_a2m[i] = 0;
     }
 
-    if (CARDCODE < 2) { /* MIX, MIX/360 */
+    if (CARD_MIX == CARDCODE) {
     	for (i = 0; i < 49; i++) {
             cr_m2a[i] = m2a[i];
         }
@@ -3684,22 +3685,14 @@ void InitMixToAscii(void)
         for (i = 49; i < 64; i++) {
             cr_m2a[i] = '?';
         }
-    } else { /* DEC 026/029 */
-    	for (i = 0; i < 64; i++) {
-            cr_m2a[i] = m2a[i];
-        }
     }
 	for (i = 0; i < 64; i++) {
 		a2m[(int) m2a[i]] = i;
 		cr_a2m[(int) cr_m2a[i]] = i;
 	}
-	if (CARDCODE < 2) {
-        cr_a2m[' '] = 0;
-        cr_a2m['?'] = 0;
-        if (CARD_MIX == CARDCODE) {
-            a2m[' '] = 0;
-            a2m['?'] = 0;
-        }
+	if (CARD_MIX == CARDCODE) {
+        cr_a2m[' '] = 0; a2m[' '] = 0;
+        cr_a2m['?'] = 0; a2m['?'] = 0;
     }
 }
 
@@ -3790,7 +3783,7 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-o bcfimx][-g [unit]][-369][-ad][-s addr][-t aio][-lpr] file1...\n");
+	Print("usage: mix [-o bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lpr] file1...\n");
     Print("options:\n");
     Print("    -g [unit]  push GO button on unit (def. card reader)\n");
     Print("    -o bcfimx  MIX config (also from MIXCONFIG env.var):\n");
@@ -3801,6 +3794,7 @@ void Usage(void)
     Print("                 m - Mixmaster\n");
     Print("                 x - double/indirect-indexing facility\n");
     Print("\n");
+    Print("    -3         Stanford MIX/360 card codes\n");
     Print("    -a         assemble only\n");
     Print("    -d         dump non-zero locations\n");
     Print("    -l         punch LNKLD cards\n");
@@ -3809,10 +3803,6 @@ void Usage(void)
     Print("    -s address set START address\n");
     Print("    -t aio     enable tracing: Asm,Io,Op\n");
     Print("\n");
-    Print("card codes:\n");
-    Print("    -3         Stanford MIX/360\n");
-    Print("    -6         DEC 026\n");
-    Print("    -9         DEC 029\n");
 	exit(1);
 }
 
@@ -3956,8 +3946,8 @@ int main(int argc, char*argv[])
         } 
 		switch (arg[1]) {
         case '3': CARDCODE = CARD_MIX360; continue;
-        case '6': CARDCODE = CARD_DEC026; continue;
-        case '9': CARDCODE = CARD_DEC029; continue;
+        /* case '6': CARDCODE = CARD_DEC026; continue; */
+        /* case '9': CARDCODE = CARD_DEC029; continue; */
 		case 'g':
             CONFIG |= MIX_PUSHGO;
 			if (i + 1 < argc) {
