@@ -42,6 +42,8 @@
  *  ========
  *  250701AP    fixed double-indexing in assembler
  *              refactored logging
+ *              refactored options, added MIXCONFIG env.var
+ *              added KIPS rating
  *  250630AP    added memory access checking
  *              fixed MOVE, Go button
  *              refactored blkRead/blkWrite
@@ -212,6 +214,8 @@ Toggle TRANS, LNKLD, DUMP;
 int CARDCODE;
 char TRANSNM[5+1];
 
+#define TYME_BASE   6
+
 FILE *LPT;
 unsigned Tyme, IdleTyme, InstCount, TraceCount, ElapsedMS;
 unsigned short *freq, *ctlfreq;
@@ -255,7 +259,9 @@ int EventH, PendingH;
 
 void Schedule(unsigned delta, int u, EventType what, Word M);
 void ScheduleINT(int u);
+
 void devError(int u);
+void Usage(void);
 
 
 /* ============== S M  A R I T H M E T I C ================== */
@@ -806,7 +812,7 @@ void Awake(void)
     ASSERT(0 < WaitEvt && WaitEvt <= Tyme);
     ASSERT(S_NORMAL == STATESAV || S_CONTROL == STATESAV);
 
-    TraceIOLoc("AWAKE AT %07u", Tyme);
+    TraceIOLoc("AWAKE AT %09u", Tyme);
 
     STATE = STATESAV;
     STATESAV = S_HALT;
@@ -1319,7 +1325,7 @@ void doIO(int u)
 	what = devs[u].what;
 
     PSAV = P; P = LOC;
-        DEV_TraceIOLoc(u, M, "%07u %s", Tyme, sio[what]);
+        DEV_TraceIOLoc(u, M, "%09u %s", Tyme, sio[what]);
     P = PSAV;
     	
     devs[u].what = DO_NOTHING;
@@ -3021,7 +3027,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 		xprint(reg[i]);
 
 	xprint(rJ);
-	Print("%c %c %07u\n", sot[OT], sci[CI], Tyme);
+	Print("%c %c %09u\n", sot[OT], sci[CI], Tyme);
 }
 
 
@@ -3716,8 +3722,10 @@ void LoadCore(const char *path, Word *adr, int len, const char *msg)
 
 void InitCore(void)
 {
-    LoadCore(CORE_MEM,    mem, MAX_MEM + 1, "CORE");
-    LoadCore(CORE_MEM, ctlmem, MAX_MEM + 1, "CONTROL CORE");
+    if (CONFIG & MIX_CORE) {
+        LoadCore(CORE_MEM,    mem, MAX_MEM + 1, "CORE");
+        LoadCore(CORE_MEM, ctlmem, MAX_MEM + 1, "CONTROL CORE");
+    }
 }
 
 void InitOptions(void)
@@ -3731,6 +3739,22 @@ void InitOptions(void)
     XEQTING = OFF;
     FF = OFF;
     CARDCODE = CARD_MIX;
+}
+
+void InitMixConfig(const char *arg)
+{
+    while (arg && *arg) {
+        switch (*arg++) {
+        case 'b': CONFIG |= MIX_BINARY; break;
+        case 'c': CONFIG |= MIX_CORE; break;
+        case 'f': CONFIG |= MIX_FLOAT; break;
+        case 'i': CONFIG |= MIX_INTERRUPT; break;
+        case 'm': CONFIG |= MIX_MASTER; break;
+        case 'x': CONFIG |= MIX_INDEX; break;
+        default:
+            Usage();
+        }
+    }
 }
 
 void Init(void)
@@ -3760,26 +3784,23 @@ void Init(void)
     PendingH = 0;
     WaitEvt = 0;
 
-    if (CONFIG & MIX_CORE)
-        InitCore();
+    InitCore();
     InitMixToAscii();
 }
 
 void Usage(void)
 {
-	Print("usage: mix [-bcfgimx][-6ad][-s addr][-t aio][-lpr] file1...\n");
+	Print("usage: mix [-o bcfimx][-g [unit]][-369][-ad][-s addr][-t aio][-lpr] file1...\n");
     Print("options:\n");
-    Print("    -b         install binary MIX\n");
-    Print("    -c         core memory (core.mem)\n");
-    Print("    -f         install floating-point attachment\n");
     Print("    -g [unit]  push GO button on unit (def. card reader)\n");
-    Print("    -i         install interrupt facility\n");
-    Print("    -m         Mixmaster\n");
-    Print("    -x         install double/indirect-indexing facility\n");
-
-    Print("    -3         use Stanford MIX/360 charset\n");
-    Print("    -6         use DEC 026 charset\n");
-    Print("    -9         use DEC 029 charset\n");
+    Print("    -o bcfimx  MIX config (also from MIXCONFIG env.var):\n");
+    Print("                 b - binary MIX\n");
+    Print("                 c - core memory (core.mem/core.ctl)\n");
+    Print("                 f - floating-point attachment\n");
+    Print("                 i - interrupt facility\n");
+    Print("                 m - Mixmaster\n");
+    Print("                 x - double/indirect-indexing facility\n");
+    Print("\n");
     Print("    -a         assemble only\n");
     Print("    -d         dump non-zero locations\n");
     Print("    -l         punch LNKLD cards\n");
@@ -3787,6 +3808,11 @@ void Usage(void)
     Print("    -r         free fmt MIXAL\n");
     Print("    -s address set START address\n");
     Print("    -t aio     enable tracing: Asm,Io,Op\n");
+    Print("\n");
+    Print("card codes:\n");
+    Print("    -3         Stanford MIX/360\n");
+    Print("    -6         DEC 026\n");
+    Print("    -9         DEC 029\n");
 	exit(1);
 }
 
@@ -3906,14 +3932,16 @@ void PunchTrans(void)
 
 int main(int argc, char*argv[])
 {
-	int i, j, u;
+	int i, u;
 	char *arg;
-    Toggle ASMONLY, GO;
+    Toggle ASMONLY;
     char *asmfiles[NASMFILES];
     int nasmfiles;
 
     InitOptions();
-    ASMONLY = OFF; GO = OFF; u = CARD_READER;
+    InitMixConfig(getenv("MIXCONFIG"));
+
+    ASMONLY = OFF; u = CARD_READER;
     nasmfiles = 0;
 
 	for (i = 1; i < argc; i++) {
@@ -3927,12 +3955,11 @@ int main(int argc, char*argv[])
             continue;
         } 
 		switch (arg[1]) {
-        case 'b': CONFIG += MIX_BINARY; continue;
-        case 'c': CONFIG += MIX_CORE; continue;
-        case 'f': CONFIG += MIX_FLOAT; continue;
+        case '3': CARDCODE = CARD_MIX360; continue;
+        case '6': CARDCODE = CARD_DEC026; continue;
+        case '9': CARDCODE = CARD_DEC029; continue;
 		case 'g':
-            CONFIG += MIX_PUSHGO;
-            GO = ON;
+            CONFIG |= MIX_PUSHGO;
 			if (i + 1 < argc) {
                 arg = argv[i+1];
                 if (IsDigit(*arg)) {
@@ -3940,13 +3967,12 @@ int main(int argc, char*argv[])
                 }
 			}
 			continue;
-        case 'i': CONFIG += MIX_INTERRUPT; continue;
-        case 'm': CONFIG += MIX_MASTER; continue;
-        case 'x': CONFIG += MIX_INDEX; continue;
-
-        case '3': CARDCODE = CARD_MIX360; continue;
-        case '6': CARDCODE = CARD_DEC026; continue;
-        case '9': CARDCODE = CARD_DEC029; continue;
+        case 'o':
+			if (i + 1 < argc) {
+                InitMixConfig(argv[++i]);
+                continue;
+			}
+            break;
         case 'a': ASMONLY = ON; continue;
         case 'd': DUMP = ON; continue;
         case 'l': LNKLD = ON; continue;
@@ -3961,11 +3987,11 @@ int main(int argc, char*argv[])
 		case 't':
 			if (i + 1 < argc) {
 				arg = argv[++i];
-				for (j = 0; j < strlen(arg); j++) {
-					switch (arg[j]) {
+                while (*arg) {
+					switch (*arg++) {
 					case 'i': TRACEIO = ON; break;
 					case 'o': TRACEOP = ON; break;
-					case 'a': TRACEA = ON; break;
+					case 'a': TRACEA  = ON; break;
 					default:
 						Usage();
 					}
@@ -3993,18 +4019,21 @@ int main(int argc, char*argv[])
 
     if (TRANS)
         PunchTrans();
-    if (GO) {
+    if (CONFIG & MIX_PUSHGO) {
 	    Go(DEVNO(u));
     } else if (!ASMONLY)
         Run(START);
     if (DUMP)
         Stats(stderr, 4, 0);
     if (InstCount) {
-        double elapsedS = ElapsedMS / 1000.0;
-        Print("                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
-        Print("                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
+        double elapsedSeconds   = ElapsedMS / 1000.0;
+        double elapsedTySeconds = (Tyme * TYME_BASE) / 1000000.0;
+        double mipsRate = (InstCount / elapsedSeconds) / 1000000.0;
+        double kipsRate = (InstCount / elapsedTySeconds) / 1000.0;
+        Print("%*sTOTAL INSTRUCTIONS EXECUTED:     %09d\n", 30, "", InstCount);
+        Print("%*sTOTAL ELAPSED TYME:              %09du (%09d IDLE) (%5.1lf KIPS)\n", 30, "", Tyme, IdleTyme, kipsRate);
 
-        Print("                              TOTAL ELAPSED TIME:              %lf (%.1lf MIPS)\n", elapsedS, (InstCount / elapsedS) / 1000000.0);
+        Print("%*sTOTAL ELAPSED TIME:              %9.3lfs                  (%5.1lf MIPS)\n", 30, "", elapsedSeconds, mipsRate);
     }
 
 	return 0;
