@@ -20,6 +20,6 @@ START      AND  1
            INT  1234
            XEQ  5678
            CPMA 1234
-           LDA  2222,2:3(5:4)
+           LDA  2222,2:3(4:5)
            END  START
            

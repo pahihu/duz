@@ -46,6 +46,8 @@
  *              added KIPS rating
  *              removed DEC 026/029, MIX/360 is 64-char card code
  *              replaced most shift operations w/ MOD and DIV
+ *              negative P/TRANS fmt fixes
+ *              negative address fixes in assembler
  *  250630AP    added memory access checking
  *              fixed MOVE, Go button
  *              refactored blkRead/blkWrite
@@ -178,6 +180,7 @@ char *strtoupper(char *s)
 #define RANGE(x,lo,hi)  (lo <= (x) && (x) <= hi)
 #define MIN(x,y)        ((x) < (y) ? (x) : (y))
 #define MAX(x,y)        ((x) > (y) ? (x) : (y))
+#define ABS(x)          ((x) < 0 ? -(x) : (x))
 
 
 typedef unsigned int Word;
@@ -195,7 +198,7 @@ Word CONFIG;
 
 #define CORE_MEM    "core.mem"
 #define CORE_CTL    "core.ctl"
-unsigned MAX_MEM;
+int MAX_MEM;
 #define TRACE       mem[MAX_MEM+1]
 #define TIMER       mem[MAX_MEM+2]
 
@@ -274,7 +277,7 @@ void Usage(void);
 #define SM_MASK(x)	((1U << (x)) - 1)
 #define A_MASK      SM_MASK(12)
 unsigned IX_MASK;
-#define SM_MINUS1	(SM_SIGN + 1U)
+#define SM_NOADDR   (SM_SIGN + 07777U)
 
 #define SIGN(x)		(SM_SIGN & (x))
 #define	SM_WORD		SM_MASK(30)
@@ -1681,7 +1684,7 @@ int devOpen(int u)
 			fd = fopen(devname, BIN_CREATE);
 	}
 	if (NULL == fd) {
-		DEV_Error(u, SM_MINUS1, "%s init failed", devname);
+		DEV_Error(u, SM_NOADDR, "%s init failed", devname);
 		return 1;
 	}
 	devs[u].fd = fd;
@@ -2176,13 +2179,13 @@ int LinkLoad(Word adr, Word w)
 	int ret = 0;
 	
     Info("LINKLOAD");
-	while (SM_MINUS1 != adr) {
+	while (SM_NOADDR != adr) {
 	    if (GetV(adr, FIELD(0, 2), &nadr)) {
 		    ret = 1;
 		    break;
 	    }
 	    MemWrite(adr, FIELD(0, 2), w);
-        Print(" %04o/%04o", MAG(adr), MAG(w));
+        Print(" %c%04o/%c%04o", PLUS(adr), MAG(adr), PLUS(w), MAG(w));
 		if (adr == nadr) {
 			ret = 1;
 			break;
@@ -2193,9 +2196,13 @@ int LinkLoad(Word adr, Word w)
 	return ret;
 }
 
+void OverPunch(char *buf, int sign, unsigned w);
+
 void PunchLinkLoad(FILE *fout)
 {
     int i, j, n;
+    char buf[8 + 1];
+    Word a, w;
 
     // LNKLDn  12341234...
     for (i = 0; i < nload; i += 18) {
@@ -2203,8 +2210,12 @@ void PunchLinkLoad(FILE *fout)
         fprintf(fout, "LNKLD%d  ", n / 2);
         for (j = 0; j < 18; j += 2) {
             if (j < n) {
-                fprintf(fout, "%04d%04d", LOAD[i + j], LOAD[i + j + 1]);
-                LinkLoad(LOAD[i + j], LOAD[i + j + 1]);
+                a = LOAD[i + j]; w = LOAD[i + j + 1];
+                sprintf(buf, "%04d%04d", a, w);
+                OverPunch(buf + 3, SIGN(a), MAG(a));
+                OverPunch(buf + 7, SIGN(w), MAG(w));
+                fprintf(fout, "%s", buf);
+                LinkLoad(a, w);
             }
             else
                 fprintf(fout, "        ");
@@ -2316,7 +2327,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
 	Toggle islocal;
 	Word adr;
 
-	adr = SM_MINUS1;
+	adr = SM_NOADDR;
     if (found) {
         if (NULL == S)
             S = syms[found-1].S;
@@ -2345,7 +2356,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
         }
         syms[found-1].N = w;
         syms[found-1].D = ON;
-        if (SM_MINUS1 != adr) {
+        if (SM_NOADDR != adr) {
 	        if (nload >= NLOAD) {
 		        Error("LOADER TABLE FULL");
 		        return AsmError(EA_LINKLD);
@@ -2366,7 +2377,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
     TraceA("    D=%s", ONOFF(defd));
     strcpy(syms[nsyms].S, S);
     syms[nsyms].N = w;
-    syms[nsyms].A = SM_MINUS1;
+    syms[nsyms].A = SM_NOADDR;
     syms[nsyms].D = defd;
     nsyms++;
     LSYM = nsyms;
@@ -2394,7 +2405,7 @@ void InitLocals(char typ)
     for (i = 0; i < 10; i++) {
         S[0] = '0' + i;
         S[1] = typ;
-        DefineSym(S, 'B' == typ ? SM_NAN : SM_MINUS1, OFF);
+        DefineSym(S, SM_NOADDR, OFF);
     }
 }
 
@@ -2587,7 +2598,7 @@ Word Apart(void)
                 DefineSym(S, P, OFF);
                 if ('=' == S[0])
                     syms[LSYM-1].A = v;
-                v = SM_MINUS1;
+                v = SM_NOADDR;
             }
             if (!IsLocalSym(S))
                 FREF = '/';
@@ -2721,12 +2732,12 @@ void DefineLiterals(void)
             w = syms[i].A;
             DefineSymIdx(i+1 /*syms[i].S*/, syms[i].S, P, ON);
             PrintList(needs, w, P, syms[i].S);
-            MemWrite(P, FULL, w); P++;
+            MemWrite(P, FULL, w); smINC(&P);
         } else if (!syms[i].D) {
             EC[0] = EA_UNDSYM;
             NEEDAWS = 0;
             LREF = syms[i].N;
-            PrintList(needs, 0, SM_MINUS1, syms[i].S);
+            PrintList(needs, 0, SM_NOADDR, syms[i].S);
         }
     }
     EC[0] = ' ';
@@ -2747,9 +2758,9 @@ void DefineLocationSym(Word w)
             syms[xb-1].N = syms[XH-1].N;
             syms[xb-1].D = syms[XH-1].D;
         }
-        if (SM_MINUS1 != syms[xf-1].N) {
+        if (SM_NOADDR != syms[xf-1].N) {
             DefineSymIdx(xf, NULL, w, ON);
-            syms[xf-1].N = SM_MINUS1;
+            syms[xf-1].N = SM_NOADDR;
             syms[xf-1].D = OFF;
         }
         DefineSymIdx(XH, NULL, w, ON);
@@ -2853,8 +2864,10 @@ int Assemble(char *line)
         else if (!strcmp(OP, "END ")) {
             DefineLiterals();
             OLDP = P;
-            if (SM_MINUS1 == START)
-                START = w = field(Wvalue(), FIELD(4,5));
+            if (SM_NAN == START) {
+                w = Wvalue();
+                w = START = SIGN(w) + field(w, FIELD(4,5));
+            }
             else
                 Warning("START ADDRESS IGNORED");
             NEEDAWS = 'S';
@@ -2872,7 +2885,7 @@ int Assemble(char *line)
         int xb = localSymIdx(LOCATION, 'B');
         syms[xb-1].N = syms[XH-1].N;
         syms[xb-1].D = syms[XH-1].D;
-        syms[XH-1].N = SM_MINUS1;
+        syms[XH-1].N = SM_NOADDR;
         syms[XH-1].D = OFF;
         XH = 0;
     }
@@ -3535,7 +3548,7 @@ int Step(void)
 		}
 		break;
 	}
-    P++;
+    smINC(&P);
 	return 0;
 }
 
@@ -3547,7 +3560,7 @@ void Run(Word p)
     unsigned startMS;
 
     startMS = CurrentMS();
-	P = p; OLDP = p + 1; STATE = S_NORMAL;
+	P = p; OLDP = smADD(p, 1); STATE = S_NORMAL;
 	while (Running()) {
         if (!IsWaiting()) {
             if (TRACE && OLDP != P)
@@ -3560,7 +3573,7 @@ void Run(Word p)
         if (IsWaiting())
             P = OLDP;
         else {
-            freq[OLDP]++; InstCount++;
+            (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
 	}
     if (Halted()) {
@@ -3722,7 +3735,7 @@ void InitOptions(void)
     LPT = stderr;
     TRACEOP = TRACEIO = OFF; TraceCount = 0; TRACEA = OFF;
     TRANS = LNKLD = DUMP = OFF;
-    START = SM_MINUS1;
+    START = SM_NAN;
     TRANSNM[0] = 0;
     XEQTING = OFF;
     FF = OFF;
@@ -3820,12 +3833,18 @@ void Go(int d)
 	Run(0);
 }
 
+void OverPunch(char *buf, int sign, unsigned w)
+{
+   if (sign)
+        *buf = "~JKLMNOPQR"[w MOD 10];
+}
 
-void Stats(FILE *fd, int STRIDE, int dotrans)
+void Stats(FILE *fd, int STRIDE, Word dotrans)
 {
     int prev_i, i, j, minj, maxj;
     unsigned emit, prev_emit;
     FILE *LPTSAV;
+    int MIN_MEM;
 
     LPTSAV = LPT; LPT = fd;
     if (!dotrans) {
@@ -3840,10 +3859,11 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
     }
 
     prev_emit = 0; prev_i = 0;
-    for (i = 0; i <= MAX_MEM; i += STRIDE) {
+    MIN_MEM = (CONFIG & MIX_INTERRUPT) ? -MAX_MEM : 0;
+    for (i = MIN_MEM; i <= MAX_MEM; i += STRIDE) {
         emit = 0; minj = STRIDE; maxj = 0;
         for (j = 0; (i + j <= MAX_MEM) && (j < STRIDE); j++) {
-            Word mag = mem[i + j];
+            Word mag = MemRead(i2w(i + j));
             if (mag) {
                 if (j < minj)
                     minj = j;
@@ -3858,39 +3878,60 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
         if (!dotrans) {
             if (prev_emit == emit)
                 continue;
-            if (prev_emit && ((prev_i + STRIDE) != i))
-                PrintLPT("%04o..%04o   SAME AS ABOVE\n", prev_i, i - 1);
+            if (prev_emit && ((prev_i + STRIDE) != i)) {
+                Word a_prev_i = i2w(prev_i), a_i_1 = i2w(i - 1);
+                PrintLPT("%c%05o..%c%05o   SAME AS ABOVE\n",
+                    PLUS(a_prev_i), MAG(a_prev_i), PLUS(a_i_1), MAG(a_i_1));
+            }
         }
         prev_i = i;
         prev_emit = emit;
         if (dotrans) {
-            char buf[11];
-            PrintLPT("%-5s%d%04d", TRANSNM, maxj - minj + 1, i + minj);
+            char buf[10 + 1];
+            int i_minj = i + minj;
+            sprintf(buf, "%-5s%d%04d", TRANSNM, maxj - minj + 1, ABS(i_minj));
+            OverPunch(buf + 9, i_minj < 0, ABS(i_minj));
+            PrintLPT(buf);
             for (j = minj; j < minj + STRIDE; j++) {
                 if (j > maxj)
                     strcpy(buf, "0000000000");
             	else {
-                    Word w = mem[i + j];
+                    Word w = MemRead(i2w(i + j));
                     sprintf(buf, "%010d", MAG(w));
-                    if (SIGN(w))
-                        buf[9] = "~JKLMNOPQR"[MAG(w) % 10];
+                    OverPunch(buf + 9, SIGN(w), MAG(w));
                 }
                 PrintLPT("%s", buf);
             }
         } else {
+            int a;
             PrintLPT("%04o: ", i);
-            for (j = 0; j < STRIDE; j++)
-                wprint(mem[i + j]);
+            for (j = 0; j < STRIDE; j++) {
+                a = i + j;
+                if (i + j <= MAX_MEM)
+                    wprint(MemRead(i2w(i + j)));
+                else
+                    PrintLPT("       ");
+            }
             PrintLPT("     ");
-            for (j = 0; j < STRIDE; j++)
-                PrintLPT(" %05d", freq[i + j]);
+            for (j = 0; j < STRIDE; j++) {
+                a = i + j;
+                if (a <= MAX_MEM)
+                    PrintLPT(" %05d", (a < 0 ? ctlfreq : freq)[ABS(a)]);
+                else
+                    PrintLPT("      ");
+            }
         }
         nl();
     }
     if (dotrans) {
+        char buf[MAX_LINE + 1 + 1];
+        Word adr;
         if (LNKLD)
             PunchLinkLoad(LPT);
-        PrintLPT("TRANS0%04d%*s\n", dotrans - 1, 70, " ");
+        adr = smSUB(dotrans, 1);
+        sprintf(buf, "TRANS0%04d%*s\n", adr, 70, " ");
+        OverPunch(buf + 9, SIGN(adr), MAG(adr));
+        PrintLPT(buf);
 	}
     LPT = LPTSAV;
 }
@@ -3906,7 +3947,7 @@ void PunchTrans(void)
     strcat(buf, ".tra");
     strtolower(buf);
     if ((fout = fopen(buf, TXT_APPEND))) {
-        Stats(fout, 7, START+1);
+        Stats(fout, 7, smADD(START, 1));
         fclose(fout);
     } else
         Error("CANNOT OPEN %s", buf);
@@ -3999,7 +4040,7 @@ int main(int argc, char*argv[])
         if (arg) *arg = 0;
     }
 
-    if (SM_MINUS1 == START)
+    if (SM_NAN == START)
         START = 0;
 
     if (TRANS)

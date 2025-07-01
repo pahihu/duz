@@ -11,7 +11,9 @@ echo       TRANS DECK: %1.tra
 echo ===============================================================
 echo:
 
-if exist %1.tra del/q %1.tra
+if exist %1.prn  del/q %1.prn
+if exist %1.tra  del/q %1.tra
+
 .\mix.exe -a %1.mix -p >%1.prn 2>&1
 goto end
 
