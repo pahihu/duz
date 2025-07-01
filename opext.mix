@@ -1,0 +1,25 @@
+*...+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8
+*LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
+           ORIG -1000
+START      AND  1
+           OR   2
+           XOR  3
+           NEG
+           XCH
+           SLB  4
+           SRB  5
+           JAE  START
+           J2O  2F
+2H         FLOT
+           FIX
+           FADD 6
+           FSUB 7
+           FMUL 8
+           FDIV 9
+           FCMP 10
+           INT  1234
+           XEQ  5678
+           CPMA 1234
+           LDA  2222,2:3(5:4)
+           END  START
+           

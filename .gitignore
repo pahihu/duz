@@ -1,6 +1,10 @@
 mix
 *.o
 *.log
-*.prn *.tre *.tra
+*.prn
+*.tre
+*.tra
+core.mem
+core.ctl
 *~
 *.*~
