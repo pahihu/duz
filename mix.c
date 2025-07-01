@@ -40,16 +40,18 @@
  *
  *  History:
  *  ========
+ *  250701AP    fixed double-indexing in assembler
+ *              refactored logging
  *  250630AP    added memory access checking
  *              fixed MOVE, Go button
- *              reworked blkRead/blkWrite
+ *              refactored blkRead/blkWrite
  *              more work on interrupt handling
  *              added MIPS rating
  *              multiply defined asm literals
  *              fixed MUL/DIV timing
  *              added FP routine skeletons + timing + decoding
  *              added DEC 026/029 card codes
- *  250629AP    reworked options, Knuth or Stanford MIX/360 charset
+ *  250629AP    refactored options, Knuth or Stanford MIX/360 charset
  *              fixed save CORE
  *              added SLB, SRB, JrE, JrO, CPMr
  *              disable nested XEQ
@@ -65,7 +67,7 @@
  *  250627AP    wait for I/O completion on HLT
  *              asm error handling
  *              fixed LNKLD card
- *              fixed smMPY, smDIV, simplified ENTr, fixed shift
+ *              fixed smMUL, smDIV, simplified ENTr, fixed shift
  *  250626AP    fixed smDIV, local symbols, LNKLD card
  *  250624AP    local symbols skeleton
  *  250623AP    literal constants
@@ -106,6 +108,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>
+#include <stdarg.h>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/time.h>
@@ -232,6 +235,10 @@ Toggle XEQTING;
 
 void MemWrite(Word a, int f, Word w);
 Word MemRead(Word a);
+int Stop(void);
+
+#define UNO(dev)    ((dev) - 1)
+#define DEVNO(u)    ((u) + 1)
 
 #define DEV_RTC	0
 #define	DEV_MT 	1
@@ -248,6 +255,8 @@ int EventH, PendingH;
 
 void Schedule(unsigned delta, int u, EventType what, Word M);
 void ScheduleINT(int u);
+void devError(int u);
+
 
 /* ============== S M  A R I T H M E T I C ================== */
 
@@ -276,16 +285,218 @@ unsigned IX_MASK;
 
 
 
+/* ===================== L O G G I N G ====================== */
+
+void LogLoc(int severity, const char *fmt, va_list args)
+{
+    fprintf(stderr, "-%c-MIX: LOC=%c%04o ", severity, PLUS(P), MAG(P));
+
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+}
+
+void Log(int severity, const char *fmt, va_list args)
+{
+    fprintf(stderr, "-%c-MIX: ", severity);
+
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+}
+
+void DEV_LogLoc(int severity, int u, Word M, const char *fmt, va_list args)
+{
+    fprintf(stderr, "-%c-MIX: LOC=%c%04o UNO=%02o/%c%04o ", severity, PLUS(P), MAG(P), UNO(u), PLUS(M), MAG(M));
+
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+}
+
+void DEV_Log(int severity, int u, Word M, const char *fmt, va_list args)
+{
+    fprintf(stderr, "-%c-MIX: UNO=%02o/%c%04o ", severity, UNO(u), PLUS(M), MAG(M));
+
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+}
+
+int MIX_ErrorLoc(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    LogLoc('E', fmt, args);
+    va_end(args);
+
+    return Stop();
+}
+
+int MIX_Error(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    Log('E', fmt, args);
+    va_end(args);
+
+    return Stop();
+}
+
+void Error(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    Log('E', fmt, args);
+    va_end(args);
+}
+
+void DEV_ErrorLoc(int u, Word M, const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    DEV_LogLoc('E', u, M, fmt, args);
+    va_end(args);
+
+    devError(u);
+}
+
+void DEV_Error(int u, Word M, const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    DEV_Log('E', u, M, fmt, args);
+    va_end(args);
+
+    devError(u);
+}
+
+void WarningLoc(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    LogLoc('W', fmt, args);
+    va_end(args);
+}
+
+void Warning(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    Log('W', fmt, args);
+    va_end(args);
+}
+
+void InfoLoc(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    LogLoc('I', fmt, args);
+    va_end(args);
+}
+
+void Info(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    Log('I', fmt, args);
+    va_end(args);
+}
+
+void TraceIOLoc(const char *fmt, ...)
+{
+    va_list args;
+
+    if (!TRACEIO)
+        return;
+
+    va_start(args, fmt);
+    LogLoc('I', fmt, args);
+    va_end(args);
+}
+
+void TraceIO(const char *fmt, ...)
+{
+    va_list args;
+
+    if (!TRACEIO)
+        return;
+
+    va_start(args, fmt);
+    Log('I', fmt, args);
+    va_end(args);
+}
+
+void TraceA(const char *fmt, ...)
+{
+    va_list args;
+
+    if (!TRACEA)
+        return;
+
+    va_start(args, fmt);
+    Log('I', fmt, args);
+    va_end(args);
+}
+
+void DEV_TraceIOLoc(int u, Word M, const char *fmt, ...)
+{
+    va_list args;
+
+    if (!TRACEIO)
+        return;
+
+    va_start(args, fmt);
+    DEV_LogLoc('I', u, M, fmt, args);
+    va_end(args);
+}
+
+void DEV_TraceIO(int u, Word M, const char *fmt, ...)
+{
+    va_list args;
+
+    if (!TRACEIO)
+        return;
+
+    va_start(args, fmt);
+    DEV_Log('I', u, M, fmt, args);
+    va_end(args);
+}
+
+void Print(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+}
+
+void PrintLPT(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    vfprintf(LPT, fmt, args);
+    va_end(args);
+}
+
+
 /* ================= L P T  O U T P U T ==================== */
 
 void nl(void)
 {
-    fprintf(LPT, "\n");
+    PrintLPT("\n");
 }
 
 void space(void)
 {
-	fprintf(LPT, " ");
+	PrintLPT(" ");
 }
 
 void spaces(int n)
@@ -298,12 +509,12 @@ void spaces(int n)
 
 void bprint(Byte w)
 {
-	fprintf(LPT, "%02o ", w);
+	PrintLPT("%02o ", w);
 }
 
 void aprin(Word w)
 {
-	fprintf(LPT, "%05o", MAG(w));
+	PrintLPT("%05o", MAG(w));
 }
 
 void aprint(Word w)
@@ -313,12 +524,12 @@ void aprint(Word w)
 
 void wprint(Word w)
 {
-	fprintf(LPT, "%c%010o ", PLUS(w), MAG(w));
+	PrintLPT("%c%010o ", PLUS(w), MAG(w));
 }
 
 void xprin(Word w)
 {
-	fprintf(LPT, "%c%05o", PLUS(w), MAG(w));
+	PrintLPT("%c%05o", PLUS(w), MAG(w));
 }
 
 void xprint(Word w)
@@ -328,17 +539,17 @@ void xprint(Word w)
 
 void aprint4(Word w)
 {
-	fprintf(LPT, "%c%04o ", PLUS(w), MAG(w));
+	PrintLPT("%c%04o ", PLUS(w), MAG(w));
 }
 
 void dprin(int d)
 {
-    fprintf(LPT, "%d ", d);
+    PrintLPT("%d ", d);
 }
 
 void cprin(int ch)
 {
-	fprintf(LPT, "%c", ch);
+	PrintLPT("%c", ch);
 }
 
 void prin(char *s)
@@ -463,7 +674,7 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 #define HI(x)	LO((x) >> 15)
 
 /* result sign is both a/x, is algebraic: +/+ or -/- is + */
-void smMPY(Word *pa, Word *px, Word a, Word x)
+void smMUL(Word *pa, Word *px, Word a, Word x)
 {
 	Word ma, mx;
 	Word lo, mid1, mid2, hi;
@@ -541,7 +752,7 @@ Word fpSUB(Word u, Word w)
     return UNDEF;
 }
 
-Word fpMPY(Word u, Word w)
+Word fpMUL(Word u, Word w)
 {
     return UNDEF;
 }
@@ -595,8 +806,7 @@ void Awake(void)
     ASSERT(0 < WaitEvt && WaitEvt <= Tyme);
     ASSERT(S_NORMAL == STATESAV || S_CONTROL == STATESAV);
 
-    if (TRACEIO)
-        fprintf(stderr, "-I-MIX: LOC=%04o AWAKE AT %07u\n", P, Tyme);
+    TraceIOLoc("AWAKE AT %07u", Tyme);
 
     STATE = STATESAV;
     STATESAV = S_HALT;
@@ -609,8 +819,7 @@ void WaitFor(unsigned evt)
     ASSERT(0 == WaitEvt);
     ASSERT(S_HALT == STATESAV);
 
-    if (TRACEIO)
-        fprintf(stderr, "-I-MIX: LOC=%04o WAIT UNTIL %07u\n", P, evt);
+    TraceIOLoc("WAIT UNTIL %07u", evt);
 
     WaitEvt = evt;
     STATESAV = STATE;
@@ -648,9 +857,10 @@ void SaveSTATE(Word loc)
 	for (i = 0; i < 8; i++)
 		ctlmem[i + 1] = reg[i];
 
-	w  = P;  w <<= 6;
+    /* TBD MIXMASTER */
+	w  = MAG(P); w <<= 6;
 	w += FIELD(OT,CI); w <<= 12;
-	w += rJ;
+	w += MAG(rJ);
 	ctlmem[1] = w;
 
 	STATE = S_CONTROL;
@@ -666,6 +876,7 @@ void RestoreSTATE(void)
     ASSERT(CONFIG & MIX_INTERRUPT);
 	ASSERT(IsControl());
 	
+    /* TBD MIXMASTER */
 	w  = ctlmem[1];
 	rJ = A_MASK & w; w >>= 12;
 	f  = BYTE(w); w >>= 6;
@@ -683,8 +894,7 @@ void RestoreSTATE(void)
 int CheckBinaryOption(void)
 {
     if (0 == (CONFIG & MIX_BINARY)) {
-        fprintf(stderr, "-E-MIX: NOT A BINARY MIX\n");
-        return Stop();
+        return MIX_Error("NOT A BINARY MIX");
     }
     return 0;
 }
@@ -692,8 +902,7 @@ int CheckBinaryOption(void)
 int CheckFloatOption(void)
 {
     if (0 == (CONFIG & MIX_FLOAT)) {
-        fprintf(stderr, "-E-MIX: NO FLOATING POINT ATTACHMENT INSTALLED \n");
-        return Stop();
+        return MIX_Error("NO FLOATING POINT ATTACHMENT INSTALLED");
     }
     return 0;
 }
@@ -701,8 +910,7 @@ int CheckFloatOption(void)
 int CheckInterruptOption(void)
 {
     if (0 == (CONFIG & MIX_INTERRUPT)) {
-        fprintf(stderr, "-E-MIX: NO INTERRUPT FACILITY INSTALLED\n");
-        return Stop();
+        return MIX_Error("NO INTERRUPT FACILITY INSTALLED");
     }
     return 0;
 }
@@ -710,8 +918,7 @@ int CheckInterruptOption(void)
 int CheckMasterOption(void)
 {
     if (0 == (CONFIG & MIX_MASTER)) {
-        fprintf(stderr, "-E-MIX: NOT A MIXMASTER\n");
-        return Stop();
+        return MIX_Error("NOT A MIXMASTER");
     }
     return 0;
 }
@@ -728,8 +935,7 @@ int CheckAddr(Word a, char *msg)
 	if ((!(CONFIG & MIX_INTERRUPT) && SIGN(a)) || MAG(a) > MAX_MEM+2) {
 		ret = 1;
 		if (msg) {
-			fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o INV.MEMORY ADDRESS %s\n", P, PLUS(a), MAG(a), msg);
-        	ret = Stop();
+			return MIX_ErrorLoc("M=%c%010o INV.MEMORY ADDRESS %s", PLUS(a), MAG(a), msg);
     	}
 	}
     return ret;
@@ -748,8 +954,7 @@ int CheckMemRead(Word a)
 int CheckAccess(Word a)
 {
     if (SIGN(a) && IsNormal()) {
-        fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o ILLEGAL ACCESS\n", P, PLUS(a), MAG(a));
-        return Stop();
+        return MIX_ErrorLoc("M=%c%010o ILLEGAL ACCESS", PLUS(a), MAG(a));
     }
     return 0;
 }
@@ -874,8 +1079,6 @@ typedef struct __Device {
 } Device;
 
 #define IO_SLOTS    21
-#define UNO(dev)    ((dev) - 1)
-#define DEVNO(u)    ((u) + 1)
 
 /*		UNO									DEVNO
  *   -: RTC									 0
@@ -1045,15 +1248,15 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     }
     
     if (TRACEIO) {
-	    fprintf(stderr, "-I-MIX: *********** SCHEDULED I/O ***********\n");
+	    Info("*********** SCHEDULED I/O ***********");
 	    i = EventH;
 	    while (i) {
 		    p = i-1;
-			fprintf(stderr, "-I-MIX: %07u LOC=%04o DEV=%02o/%04o %s\n",
+			Info("%07u LOC=%04o DEV=%02o/%04o %s",
                 devs[p].when, devs[p].LOC, p, devs[p].M, sio[devs[p].what]);
 		    i = devs[p].evtNext;
 	    }
-	    fprintf(stderr, "-I-MIX: *************************************\n");
+	    Info("*************************************");
     }
 }
 
@@ -1089,20 +1292,20 @@ void ScheduleINT(int u)
     }
 
     if (TRACEIO) {
-	    fprintf(stderr, "-I-MIX: ************ PENDING INTS ***********\n");
+	    Info("************ PENDING INTS ***********");
 	    i = PendingH;
 	    while (i) {
 		    p = i-1;
-			fprintf(stderr, "-I-MIX: %d DEV=%02o %s %c%05o\n", devs[p].Prio, p, sio[devs[p].what], PLUS(devs[p].IntAddr), MAG(devs[p].IntAddr));
+			Info("%d DEV=%02o %s %c%05o", devs[p].Prio, p, sio[devs[p].what], PLUS(devs[p].IntAddr), MAG(devs[p].IntAddr));
 		    i = devs[p].intNext;
 	    }
-	    fprintf(stderr, "-I-MIX: *************************************\n");
+	    Info("*************************************");
     }
 }
 
 void doIO(int u)
 {
-    Word M, LOC;
+    Word M, LOC, PSAV;
     int x;
     EventType what;
 
@@ -1115,8 +1318,9 @@ void doIO(int u)
     x = devType(u);
 	what = devs[u].what;
 
-	if (TRACEIO)
-        fprintf(stderr, "-I-MIX: %07u LOC=%04o UNO=%02o/%04o %s\n", Tyme, LOC, UNO(u), M, sio[what]);
+    PSAV = P; P = LOC;
+        DEV_TraceIOLoc(u, M, "%07u %s", Tyme, sio[what]);
+    P = PSAV;
     	
     devs[u].what = DO_NOTHING;
 
@@ -1134,7 +1338,7 @@ void doIO(int u)
         break;
 	case DO_BRK:
         if (devs[u].pending) {
-            fprintf(stderr, "-W-MIX: UNO=%02o PENDING INTERRUPT SINCE %08d\n", UNO(u), devs[u].when);
+            Warning("UNO=%02o PENDING INTERRUPT SINCE %08d", UNO(u), devs[u].when);
         } else {
             ScheduleINT(u);
         }
@@ -1310,8 +1514,7 @@ void blkRead(int u, Word adr, Byte *cvt)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKREAD FAILED\n", P, UNO(u), adr);
-	devError(u);
+	DEV_ErrorLoc(u, adr, "BLKREAD FAILED");
 }
 
 void blkDump(int u, Word adr, Toggle bytes)
@@ -1323,7 +1526,7 @@ void blkDump(int u, Word adr, Toggle bytes)
 	x = devType(u);
 	Blk_size = IOchar[x].blk_size;
 
-    fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLOCK: ", UNO(u), adr);
+    Info("UNO=%02o/%04o BLOCK: ", UNO(u), adr);
     if (bytes) {
 	    mar = adr;
 	    for (i = 0; i < Blk_size; i++) {
@@ -1392,16 +1595,13 @@ void blkWrite(int u, unsigned adr, char *cvt)
     buf[n] = 0;
 
 	ret = fwrite(buf, sizeof(char), n, fd);
-    if (TRACEIO) {
-        fprintf(stderr, "-I-MIX: UNO=%02o/%04o BLKWRITE BUF='%s'\n", UNO(u), adr, buf);
-    }
+    DEV_TraceIO(u, adr, "BLKWRITE BUF='%s'", buf);
 	if (ret == n) {
         fflush(fd);
 		return;
     }
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o BLKWRITE FAILED\n", P, UNO(u), adr);
-	devError(u);
+	DEV_ErrorLoc(u, adr, "BLKWRITE FAILED");
 }
 
 
@@ -1456,9 +1656,7 @@ int devOpen(int u)
 	devs[u].pos = 0;
 	devs[u].max_pos = 0;
 	fd = fopen(devname, IOchar[x].fam);
-    if (TRACEIO) {
-        fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o INIT %s\n", P, UNO(u), devname);
-    }
+    TraceIOLoc("UNO=%02o INIT %s\n", UNO(u), devname);
 	if (fd) {
 		if (DEV_MT == x || DEV_CR == x) {
 			fseek(fd, 0, SEEK_END);
@@ -1471,8 +1669,7 @@ int devOpen(int u)
 			fd = fopen(devname, BIN_CREATE);
 	}
 	if (NULL == fd) {
-		fprintf(stderr,"-E-MIX: %s init failed", devname);
-		devError(u);
+		DEV_Error(u, SM_MINUS1, "%s init failed", devname);
 		return 1;
 	}
 	devs[u].fd = fd;
@@ -1494,8 +1691,7 @@ unsigned doIOC(int u,int *pM)
 	
 	M = *pM;
 	
-    if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IOC\n", P, UNO(u), M);
+    DEV_TraceIOLoc(u, M, "OP.IOC\n");
 
 	x = devType(u);	
 	if (!M) {
@@ -1537,8 +1733,7 @@ unsigned doIOC(int u,int *pM)
 		return IOchar[x].in_tyme * M;
 	}
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IOC UNSUPPORTED\n", P, UNO(u), M);
-	devError(u);
+	DEV_ErrorLoc(u, M, "OP.IOC UNSUPPORTED");
 	return 0;
 }
 
@@ -1573,8 +1768,7 @@ void devINP(int u, Word M)
 	M = MAG(M);
 	delta = 0;
 	
-    if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.IN\n", P, UNO(u), M);
+	DEV_TraceIOLoc(u, M, "OP.IN");
 
 	if (DEV_MT == x) {
 		if (devs[u].pos >= devs[u].max_pos) {
@@ -1598,8 +1792,7 @@ void devINP(int u, Word M)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.IN %s\n", P, UNO(u), M, errmsg);
-	devError(u);
+	DEV_ErrorLoc(u, M, "OP.IN %s", errmsg);
 }
 
 
@@ -1620,8 +1813,7 @@ void devOUT(Word u,Word M)
 	M = MAG(M);
 	delta = 0;
 
-    if (TRACEIO)
-	    fprintf(stderr, "-I-MIX: LOC=%04o UNO=%02o/%04o OP.OUT\n", P, UNO(u), M);
+	DEV_TraceIOLoc(u, M, "OP.OUT");
 
 	if (DEV_MT == x) {
 		if (devs[u].pos >= IOchar[x].max_pos) {
@@ -1652,8 +1844,7 @@ void devOUT(Word u,Word M)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: LOC=%04o UNO=%02o/%04o OP.OUT %s\n", P, UNO(u), M, errmsg);
-	devError(u);
+	DEV_ErrorLoc(u, M, "OP.OUT %s", errmsg);
 }
 
 #define MM(c,f)	(((f) << 6) + (c))
@@ -1956,8 +2147,7 @@ Word START;         /* start addr */
 
 int FieldError(Byte F)
 {
-    fprintf(stderr, "-E-MIX: LOC=%04o F=%02o INVALID FIELD\n", P, F);
-    return Stop();
+    return MIX_ErrorLoc("F=%02o INVALID FIELD", F);
 }
 
 int GetV(Word M, Byte F, Word *ret)
@@ -1973,21 +2163,21 @@ int LinkLoad(Word adr, Word w)
 	Word nadr;
 	int ret = 0;
 	
-    fprintf(stderr, "-I-MIX: LINKLOAD");
+    Info("LINKLOAD");
 	while (SM_MINUS1 != adr) {
 	    if (GetV(adr, FIELD(0, 2), &nadr)) {
 		    ret = 1;
 		    break;
 	    }
 	    MemWrite(adr, FIELD(0, 2), w);
-        fprintf(stderr, " %04o/%04o", MAG(adr), MAG(w));
+        Print(" %04o/%04o", MAG(adr), MAG(w));
 		if (adr == nadr) {
 			ret = 1;
 			break;
 		}
 		adr = nadr;
 	}
-	fprintf(stderr, "\n");
+	Print("\n");
 	return ret;
 }
 
@@ -2093,11 +2283,9 @@ int FindSym(char *S)
             break;
         }
     }
-    if (TRACEA) {
-        fprintf(stderr, "-I-MIX:     FIND.SYM='%s' RESULT=%d\n", S, found);
-        if (found)
-            fprintf(stderr, "-I-MIX:     N=%d D=%s\n", w2i(syms[found-1].N), ONOFF(syms[found-1].D));
-    }
+    TraceA("    FIND.SYM='%s' RESULT=%d", S, found);
+    if (found)
+        TraceA("    N=%d D=%s", w2i(syms[found-1].N), ONOFF(syms[found-1].D));
     return found;
 }
 
@@ -2131,11 +2319,9 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
             return AsmError(EA_DUPSYM);
         }
         ASSERT(OFF == syms[found-1].D && ON == defd);
-        if (TRACEA) {
-	        N = syms[found-1].N;
-	        fprintf(stderr, "-I-MIX:     %s '%s' DEFINED %c%05o (CHAIN %c%05o)\n",
+	    N = syms[found-1].N;
+	    TraceA("    %s '%s' DEFINED %c%05o (CHAIN %c%05o)",
 	        	islocal ? " LOCAL.SYM" : "FUTURE.REF", S, PLUS(w), MAG(w), PLUS(N), MAG(N));
-        }
         if (islocal) {
 	        ASSERT('B' != S[1]);
 	        if ('F' == S[1]) {
@@ -2149,7 +2335,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
         syms[found-1].D = ON;
         if (SM_MINUS1 != adr) {
 	        if (nload >= NLOAD) {
-		        fprintf(stderr, "-E-MIX: LOADER TABLE FULL\n");
+		        Error("LOADER TABLE FULL");
 		        return AsmError(EA_LINKLD);
 	        }
 			LOAD[nload++] = adr;
@@ -2161,13 +2347,11 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
     }
     ASSERT(NULL != S);
     if (NSYMS == nsyms) {
-        fprintf(stderr, "-E-MIX: SYMBOL TABLE FULL\n");
+        Error("SYMBOL TABLE FULL");
         return AsmError(EA_DUPSYM);
     }
-    if (TRACEA) {
-        fprintf(stderr, "-I-MIX:     N=%d\n", w2i(w));
-        fprintf(stderr, "-I-MIX:     D=%s\n", ONOFF(defd));
-    }
+    TraceA("    N=%d", w2i(w));
+    TraceA("    D=%s", ONOFF(defd));
     strcpy(syms[nsyms].S, S);
     syms[nsyms].N = w;
     syms[nsyms].A = SM_MINUS1;
@@ -2181,8 +2365,7 @@ int DefineSym(char *S, Word w, Toggle defd)
 {
     int found;
 
-    if (TRACEA)
-        fprintf(stderr, "-I-MIX:     DEFINE SYM '%s'\n", S);
+    TraceA("    DEFINE SYM '%s'", S);
     if ('=' == S[0]) {
         LSYM = found = 0;
     } else {
@@ -2216,14 +2399,14 @@ void ShowLocalSyms(char *msg)
 {
     int i, d;
 
-    fprintf(stderr, "-I-MIX: **** LOCALS %s ****\n", msg);
+    TraceA("**** LOCALS %s ****", msg);
     for (i = 0; i < 10; i++) {
         d  = ShowLocal(i);
         d += ShowLocal(i + 10);
         d += ShowLocal(i + 20);
         if (d) nl();
     }
-    fprintf(stderr, "-I-MIX: ****************\n");
+    TraceA("****************");
 }
 
 void InitLocalSyms(void)
@@ -2259,8 +2442,7 @@ Word AtomicExpr(void)
 
     UNDSYM = OFF;
     GetSym();
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     ATOMICEXPR S='%s' T=%s\n", S, stok[T]);
+    TraceA("    ATOMICEXPR S='%s' T=%s", S, stok[T]);
     switch (T) {
     case TOK_ERR:
         break;
@@ -2294,8 +2476,7 @@ Word AtomicExpr(void)
             UNDSYM = ON; /* UNDEFINED */
         }
     }
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     ATOMICEXPR=%c%010o\n", PLUS(ret), MAG(ret));
+    TraceA("    ATOMICEXPR=%c%010o", PLUS(ret), MAG(ret));
     return ret;
 }
 
@@ -2315,8 +2496,7 @@ Word Expr(void)
 {
     Word v = 0, w = 0;
 
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     EXPR '%c%s'\n", CH, PLN);
+    TraceA("    EXPR '%c%s'", CH, PLN);
     if ('+' == CH || '-' == CH) {
 	    int sign = CH;
 	    NEXT();
@@ -2328,35 +2508,30 @@ Word Expr(void)
         /* future reference? */
         v = AtomicExpr();
     }
-	if (TRACEA)
-		fprintf(stderr, "-I-MIX:     V=%c%010o\n", PLUS(v), MAG(v));
+	TraceA("    V=%c%010o", PLUS(v), MAG(v));
     while (IsBinOp()) {
-		if (TRACEA)
-			fprintf(stderr, "-I-MIX:     B=%c\n", B);
+		TraceA("    B=%c", B);
 		if (UNDSYM) AsmError(EA_UNDSYM);
         w = AtomicExpr();
         if (TOK_MTY == T)
             AsmError(EA_MISSOP);
-		if (TRACEA)
-			fprintf(stderr, "-I-MIX:     W=%c%010o\n", PLUS(w), MAG(w));
+		TraceA("    W=%c%010o", PLUS(w), MAG(w));
         OT = OFF;
         switch (B) {
         case '+': v = smADD(v, w); break;
         case '-': v = smSUB(v, w); break;
-        case '*': smMPY(&w, &v, w, v); break;
+        case '*': smMUL(&w, &v, w, v); break;
         case '/': smDIV(&v, NULL, 0, v, MAG(w) ? w : 1); break;
         case 'D': smDIV(&v, NULL, v, 0, MAG(w) ? w : 1); break; /*//*/
         case ':': v = i2w(8 * w2i(v) + w2i(w)); break;
         default:
             break;
         }
-		if (TRACEA)
-			fprintf(stderr, "-I-MIX:     AFTER V=%c%010o\n", PLUS(v), MAG(v));
+		TraceA("    AFTER V=%c%010o", PLUS(v), MAG(v));
         if (OT)
         	AsmError(EA_OVRFLW);
     }
-	if (TRACEA)
-		fprintf(stderr, "-I-MIX:     EXPR V=%c%010o\n", PLUS(v), MAG(v));
+	TraceA("    EXPR V=%c%010o", PLUS(v), MAG(v));
     return v;
 }
 
@@ -2370,15 +2545,13 @@ Word Apart(void)
     if (CH && ',' != CH && '(' != CH) {
 	    if ('=' == CH) {
         	LBEG = PLN-1; NEXT();
-            if (TRACEA)
-                fprintf(stderr, "-I-MIX:     EXPR LBEG=%s\n", LBEG);
+            TraceA("    EXPR LBEG=%s", LBEG);
 	    }
         v = Expr();
 	    if (LBEG) {
 	        /* =123= */
 	        LEND = PLN-1;
-            if (TRACEA)
-                fprintf(stderr, "-I-MIX:     EXPR LEND=%c%s\n", CH, LEND);
+            TraceA("    EXPR LEND=%c%s", CH, LEND);
 	        ENSURE('=');
             if (LEND - LBEG <= 10) {
                 if (UNDSYM)
@@ -2387,8 +2560,7 @@ Word Apart(void)
                 MemSet(S, ' ', sizeof(S)-1);
                 for (i = 0; i < LEND - LBEG; i++)
                     S[i] = LBEG[i];
-                if (TRACEA)
-                    fprintf(stderr, "-I-MIX:     LIT='%s' V=%c%010o\n", S, PLUS(v), MAG(v));
+                TraceA("    LIT='%s' V=%c%010o", S, PLUS(v), MAG(v));
                 UNDSYM = ON; SX = 0;
 	        } else
 	        	AsmError(EA_MAXLEN);
@@ -2433,14 +2605,12 @@ Word Fpart(Byte C, Word F)
         ENSURE(')');
     }
     if (v != F && !RANGE(C,042,046)) {
-	    if (!RANGE(v,0,63)) {
-	        v = F; AsmError(EA_TBIGFI);
-        }
-	    if (L(v) > R(v)) {
-	        v = F; AsmError(EA_INVFLD);
-        }
+	    if (!RANGE(v,0,63))
+	        AsmError(EA_TBIGFI);
+	    if (L(v) > R(v))
+	        AsmError(EA_INVFLD);
     }
-    return v;
+    return BYTE(v);
 }
 
 Word Wvalue(void)
@@ -2448,26 +2618,20 @@ Word Wvalue(void)
     Word v = 0, w = 0;
     int f;
 
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     WVALUE\n");
+   	TraceA("    WVALUE");
     w = Expr();
     f = Fpart(0, 05);
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     W=%c%010o F=%o\n", PLUS(w), MAG(w), f);
+    TraceA("    W=%c%010o F=%o", PLUS(w), MAG(w), f);
     v = WriteField(v, f, w);
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     V=%c%010o\n", PLUS(v), MAG(v));
+    TraceA("    V=%c%010o", PLUS(v), MAG(v));
     while (!E && ',' == CH) {
         NEXT();
         w = Expr(); f = Fpart(0, 05);
-	    if (TRACEA)
-	    	fprintf(stderr, "-I-MIX:     W=%c%010o F=%o\n", PLUS(w), MAG(w), f);
+	    TraceA("    W=%c%010o F=%o", PLUS(w), MAG(w), f);
         v = WriteField(v, f, w);
-	    if (TRACEA)
-	    	fprintf(stderr, "-I-MIX:     V=%c%010o\n", PLUS(v), MAG(v));
+	    TraceA("    V=%c%010o", PLUS(v), MAG(v));
     }
-    if (TRACEA)
-    	fprintf(stderr, "-I-MIX:     WVALUE=%c%010o\n", PLUS(v), MAG(v));
+    TraceA("    WVALUE=%c%010o", PLUS(v), MAG(v));
     return v;
 }
 
@@ -2499,7 +2663,7 @@ void PrintList(char *needs, Word w, Word OLDP, char *line)
 	if ('L' == FREF) {
 		NEEDL = 'L'; FREF = ' ';
 	}
-    fprintf(stderr, "%s%c", EC, FREF);
+    Print("%s%c", EC, FREF);
     i = 0;
     if (NEEDAWS) {
 	   	if ('A' == NEEDAWS) {
@@ -2522,7 +2686,7 @@ void PrintList(char *needs, Word w, Word OLDP, char *line)
 	if (NEEDL) aprint(LREF);
 	else i += 6;
 	spaces(i + 1);
-    fprintf(stderr, "|%s\n", line);
+    Print("|%s\n", line);
 }
 
 void DefineLiterals(void)
@@ -2608,10 +2772,10 @@ int Assemble(char *line)
     ADDRESS = LINE+16;
 
     if (TRACEA) {
-        fprintf(stderr, "-I-MIX: LINE=%04d\n", LNO);
-        fprintf(stderr, "-I-MIX:     LOCATION='%s'\n", LOCATION);
-        fprintf(stderr, "-I-MIX:     OP='%s'\n", OP);
-        fprintf(stderr, "-I-MIX:     ADDRESS='%s'\n", ADDRESS);
+        TraceA("LINE=%04d", LNO);
+        TraceA("    LOCATION='%s'", LOCATION);
+        TraceA("    OP='%s'", OP);
+        TraceA("    ADDRESS='%s'", ADDRESS);
         ShowLocalSyms("BEFORE");
     }
     
@@ -2643,8 +2807,8 @@ int Assemble(char *line)
             I = Ipart();
             F = Fpart(C,F);
             if (!RANGE(C,042,046)) {
-	            if (!RANGE(I,0,6)) {
-	            	I = 0; AsmError(EA_TBIGFI);
+	            if (!RANGE(I,0,63)) {
+	            	I = BYTE(I); AsmError(EA_TBIGFI);
                 }
 			}
             MemWrite(P, FULL, w = SIGN(A) + (MAG(A) << 18) + (BYTE(I) << 12) + (BYTE(F) << 6) + C); P++;
@@ -2674,7 +2838,7 @@ int Assemble(char *line)
             if (SM_MINUS1 == START)
                 START = w = field(Wvalue(), FIELD(4,5));
             else
-                fprintf(stderr, "-W-MIX: START ADDRESS IGNORED\n");
+                Warning("START ADDRESS IGNORED");
             NEEDAWS = 'S';
             OPEND = ON;
             if (' ' != LOCATION[0])
@@ -2683,8 +2847,7 @@ int Assemble(char *line)
             AsmError(EA_UNKOPC);
     }
     if (!E && CH && ' ' != CH) {
-	    if (TRACEA)
-	    	fprintf(stderr, "-I-MIX:     EXTRA OP ('%c',%d)\n", CH, CH);
+	    TraceA("    EXTRA OP ('%c',%d)", CH, CH);
     	AsmError(EA_XTRAOP);
 	}
     if (XH) {
@@ -2712,10 +2875,10 @@ int Asm(const char *nm)
     fd = fopen(path, "rt");
     strtoupper(path);
     if (NULL == fd) {
-        fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", path);
+        Error("CANNOT OPEN %s", path);
         return 1;
     }
-    fprintf(stderr, "-I-MIX: PROCESSING %s\n", path);
+    Info("PROCESSING %s", path);
 
     nsyms = 0; nload = 0;
     InitLocalSyms();
@@ -2735,7 +2898,7 @@ int Asm(const char *nm)
         LNO++; ptr = fgets(line, sizeof(line), fd);
     }
     fclose(fd);
-    fprintf(stderr, "-I-MIX: ASSEMBLE %s\n\n", failed ? "FAILED" : "DONE");
+    Info("ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
 
     return 0;
 }
@@ -2820,30 +2983,30 @@ void Status(Word P)
 N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
 	if (0 == (TraceCount++ % 31))
-		fprintf(stderr, "   LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
-	fprintf(stderr, "%c%05o %04d ", ssta[STATE], P, freq[P] % 9999);
+		Print("   LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
+	Print("%c%05o %04d ", ssta[STATE], P, freq[P] % 9999);
     aprint4(A); bprint(I); bprint(F); bprint(C);
-	fprintf(stderr, "%s ", mnemo);
+	Print("%s ", mnemo);
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
 
 #if 0
     xprin(A);
     i = 0;
-    if (I) fprintf(stderr, ",%d", I);
+    if (I) Print(",%d", I);
     else i += 2;
     j = 5;
     if (F) {
         if ((RANGE(C,1,4) || RANGE(C,8,33) || RANGE(C,56,63))
                 && ((32 == C && 2 != F) || (32 != C && 5 != F)))
         {
-            fprintf(stderr,"(%o:%o)", L(F), R(F)); j = 0;
+            Print("(%o:%o)", L(F), R(F)); j = 0;
         } else if (RANGE(C,34,38)) {
-            fprintf(stderr, "(%02o) ", F); j = 0;
+            Print("(%02o) ", F); j = 0;
         }
     }
     i += j;
     if (i)
-        fprintf(stderr, "%*s", i, " ");
+        Print("%*s", i, " ");
 #endif
 
     if (RANGE(C,1,4) || RANGE(C,8,23) || RANGE(C,56,63)) {
@@ -2851,14 +3014,14 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         wprint(OP);
     } else {
 	    xprint(OP);
-        fprintf(stderr, "     ");
+        Print("     ");
     }
 	wprint(rA); wprint(rX);
 	for (i = 1; i <= 6; i++)
 		xprint(reg[i]);
 
 	xprint(rJ);
-	fprintf(stderr, "%c %c %07u\n", sot[OT], sci[CI], Tyme);
+	Print("%c %c %07u\n", sot[OT], sci[CI], Tyme);
 }
 
 
@@ -2866,11 +3029,9 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 int CheckIdx(int x, Toggle cy)
 {
     if (OFF != cy) {
-        fprintf(stderr,"-E-MIX: LOC=%04o RI%d OVERFLOW\n", P, x);
-		return Stop();
+        return MIX_ErrorLoc("RI%d OVERFLOW", x);
 	} else if (~(SM_SIGN + IX_MASK) & MAG(reg[x])) {
-		fprintf(stderr,"-E-MIX: LOC=%04o RI%d UNDEFINED\n", P, x);
-		return Stop();
+		return MIX_ErrorLoc("RI%d UNDEFINED", x);
 	}
     return 0;
 }
@@ -2996,14 +3157,12 @@ int Step(void)
                 return 1;
         } else {
             if (I > 6) {
-                fprintf(stderr, "-E-MIX: LOC=%04o I=%02o ILLEGAL INDEX\n", P, I);
-                return Stop();
+                return MIX_ErrorLoc("I=%02o ILLEGAL INDEX", I);
             }
 	        M = smADD(A, reg[I]);
         }
         if (~(SM_SIGN + IX_MASK) & M) {
-            fprintf(stderr, "-E-MIX: LOC=%04o M=%c%010o ILLEGAL ADDRESS\n", P, PLUS(M), MAG(M));
-            return Stop();
+            return MIX_ErrorLoc("M=%c%010o ILLEGAL ADDRESS\n", PLUS(M), MAG(M));
         }
     }
 	switch (C) {
@@ -3049,14 +3208,14 @@ int Step(void)
 	    if (6 == F) {
     	    if (CheckFloatOption())
     	        return 1;
-            rA = fpMPY(rA, MemRead(M));
+            rA = fpMUL(rA, MemRead(M));
     	    Tyme += 7; TIMER += 7;
     	    return FieldError(F);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
             }
-    		smMPY(&rA, &rX, rA, w);
+    		smMUL(&rA, &rX, rA, w);
     		Tyme += 8; TIMER += 8;
 		}
 		break;
@@ -3143,8 +3302,7 @@ int Step(void)
                 if (CheckMasterOption())
                     return 1;
                 if (XEQTING) {
-                    fprintf(stderr, "-E-MIX: LOC=%04o NESTED XEQ\n", P);
-                    return Stop();
+                    return MIX_ErrorLoc("NESTED XEQ");
                 }
                 w = P; P = M; XEQTING = ON; Step(); XEQTING = OFF; P = w;
                 break;
@@ -3157,8 +3315,7 @@ int Step(void)
 		{	Word signA, signX;
 
 			if (SIGN(M)) {
-				fprintf(stderr, "-E-MIX: LOC=%04o ILLEGAL SIGNED M=%c%05o\n", P, PLUS(M), MAG(M));
-				return Stop();
+				return MIX_ErrorLoc("ILLEGAL SIGNED M=%c%05o", PLUS(M), MAG(M));
 			} else {
 				signA = SIGN(rA); signX = SIGN(rX);
 				switch(F){
@@ -3435,10 +3592,10 @@ void SaveCore(const char *path, Word *adr, int len, const char *msg)
     if (fd) {
         n = fwrite(adr, sizeof(Word), len, fd);
         if (n != len)
-            fprintf(stderr, "-E-MIX: SAVE %s FAILED\n", msg);
+            Error("SAVE %s FAILED", msg);
         fclose(fd);
     } else
-        fprintf(stderr, "-E-MIX: CANNOT SAVE %s\n", msg);
+        Error("CANNOT SAVE %s", msg);
 }
 
 void Finish(void)
@@ -3500,7 +3657,7 @@ void InitMemory(void)
 	}
 	return;
 ErrOut:
-	fprintf(stderr, "-E-MIX: NOT ENOUGH MEMORY\n");
+	Error("NOT ENOUGH MEMORY");
 	exit(1);
 }
 
@@ -3552,7 +3709,7 @@ void LoadCore(const char *path, Word *adr, int len, const char *msg)
     if (fd) {
         n = fread(adr, sizeof(Word), len, fd);
         if (n != len)
-            fprintf(stderr, "-W-MIX: LOAD %s FAILED\n", msg);
+            Warning("LOAD %s FAILED", msg);
         fclose(fd);
     }
 }
@@ -3610,26 +3767,26 @@ void Init(void)
 
 void Usage(void)
 {
-	fprintf(stderr, "usage: mix [-bcfgimx][-6ad][-s addr][-t aio][-lpr] file1...\n");
-    fprintf(stderr, "options:\n");
-    fprintf(stderr, "    -b         install binary MIX\n");
-    fprintf(stderr, "    -c         core memory (core.mem)\n");
-    fprintf(stderr, "    -f         install floating-point attachment\n");
-    fprintf(stderr, "    -g [unit]  push GO button on unit (def. card reader)\n");
-    fprintf(stderr, "    -i         install interrupt facility\n");
-    fprintf(stderr, "    -m         Mixmaster\n");
-    fprintf(stderr, "    -x         install double/indirect-indexing facility\n");
+	Print("usage: mix [-bcfgimx][-6ad][-s addr][-t aio][-lpr] file1...\n");
+    Print("options:\n");
+    Print("    -b         install binary MIX\n");
+    Print("    -c         core memory (core.mem)\n");
+    Print("    -f         install floating-point attachment\n");
+    Print("    -g [unit]  push GO button on unit (def. card reader)\n");
+    Print("    -i         install interrupt facility\n");
+    Print("    -m         Mixmaster\n");
+    Print("    -x         install double/indirect-indexing facility\n");
 
-    fprintf(stderr, "    -3         use Stanford MIX/360 charset\n");
-    fprintf(stderr, "    -6         use DEC 026 charset\n");
-    fprintf(stderr, "    -9         use DEC 029 charset\n");
-    fprintf(stderr, "    -a         assemble only\n");
-    fprintf(stderr, "    -d         dump non-zero locations\n");
-    fprintf(stderr, "    -l         punch LNKLD cards\n");
-    fprintf(stderr, "    -p         punch nonzero locations in TRANS fmt\n");
-    fprintf(stderr, "    -r         free fmt MIXAL\n");
-    fprintf(stderr, "    -s address set START address\n");
-    fprintf(stderr, "    -t aio     enable tracing: Asm,Io,Op\n");
+    Print("    -3         use Stanford MIX/360 charset\n");
+    Print("    -6         use DEC 026 charset\n");
+    Print("    -9         use DEC 029 charset\n");
+    Print("    -a         assemble only\n");
+    Print("    -d         dump non-zero locations\n");
+    Print("    -l         punch LNKLD cards\n");
+    Print("    -p         punch nonzero locations in TRANS fmt\n");
+    Print("    -r         free fmt MIXAL\n");
+    Print("    -s address set START address\n");
+    Print("    -t aio     enable tracing: Asm,Io,Op\n");
 	exit(1);
 }
 
@@ -3662,13 +3819,13 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
     LPTSAV = LPT; LPT = fd;
     if (!dotrans) {
         nl();
-        fprintf(LPT, "CONTENTS OF MIX MEMORY (NONZERO LOCATIONS ONLY)\n");
+        PrintLPT("CONTENTS OF MIX MEMORY (NONZERO LOCATIONS ONLY)\n");
         nl();
-        fprintf(LPT, "LOC        ");
+        PrintLPT("LOC        ");
         for (i = 0; i < STRIDE; i++)
-            fprintf(LPT, "%d           ", i);
+            PrintLPT("%d           ", i);
 
-        fprintf(LPT, "%*sFREQUENCY  COUNTS\n", 1 + (6*STRIDE - 17) / 2, " ");
+        PrintLPT("%*sFREQUENCY  COUNTS\n", 1 + (6*STRIDE - 17) / 2, " ");
     }
 
     prev_emit = 0; prev_i = 0;
@@ -3691,13 +3848,13 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
             if (prev_emit == emit)
                 continue;
             if (prev_emit && ((prev_i + STRIDE) != i))
-                fprintf(LPT, "%04o..%04o   SAME AS ABOVE\n", prev_i, i - 1);
+                PrintLPT("%04o..%04o   SAME AS ABOVE\n", prev_i, i - 1);
         }
         prev_i = i;
         prev_emit = emit;
         if (dotrans) {
             char buf[11];
-            fprintf(LPT, "%-5s%d%04d", TRANSNM, maxj - minj + 1, i + minj);
+            PrintLPT("%-5s%d%04d", TRANSNM, maxj - minj + 1, i + minj);
             for (j = minj; j < minj + STRIDE; j++) {
                 if (j > maxj)
                     strcpy(buf, "0000000000");
@@ -3707,22 +3864,22 @@ void Stats(FILE *fd, int STRIDE, int dotrans)
                     if (SIGN(w))
                         buf[9] = "~JKLMNOPQR"[MAG(w) % 10];
                 }
-                fprintf(LPT, "%s", buf);
+                PrintLPT("%s", buf);
             }
         } else {
-            fprintf(LPT, "%04o: ", i);
+            PrintLPT("%04o: ", i);
             for (j = 0; j < STRIDE; j++)
                 wprint(mem[i + j]);
-            fprintf(stderr, "     ");
+            PrintLPT("     ");
             for (j = 0; j < STRIDE; j++)
-                fprintf(LPT, " %05d", freq[i + j]);
+                PrintLPT(" %05d", freq[i + j]);
         }
         nl();
     }
     if (dotrans) {
         if (LNKLD)
             PunchLinkLoad(LPT);
-        fprintf(LPT, "TRANS0%04d%*s\n", dotrans - 1, 70, " ");
+        PrintLPT("TRANS0%04d%*s\n", dotrans - 1, 70, " ");
 	}
     LPT = LPTSAV;
 }
@@ -3741,7 +3898,7 @@ void PunchTrans(void)
         Stats(fout, 7, START+1);
         fclose(fout);
     } else
-        fprintf(stderr, "-E-MIX: CANNOT OPEN %s\n", buf);
+        Error("CANNOT OPEN %s", buf);
 }
 
 
@@ -3763,7 +3920,7 @@ int main(int argc, char*argv[])
 		arg = argv[i];
 		if ('-' != *arg) {
             if (nasmfiles >= NASMFILES) {
-                fprintf(stderr, "-E-MIX: TOO MANY ASM FILES\n");
+                Error("TOO MANY ASM FILES");
                 exit(1);
             }
             asmfiles[nasmfiles++] = arg;
@@ -3844,10 +4001,10 @@ int main(int argc, char*argv[])
         Stats(stderr, 4, 0);
     if (InstCount) {
         double elapsedS = ElapsedMS / 1000.0;
-        fprintf(stderr, "                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
-        fprintf(stderr, "                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
+        Print("                              TOTAL INSTRUCTIONS EXECUTED:     %08d\n", InstCount);
+        Print("                              TOTAL ELAPSED TYME:              %08d (%d IDLE)\n", Tyme, IdleTyme);
 
-        fprintf(stderr, "                              TOTAL ELAPSED TIME:              %lf (%.1lf MIPS)\n", elapsedS, (InstCount / elapsedS) / 1000000.0);
+        Print("                              TOTAL ELAPSED TIME:              %lf (%.1lf MIPS)\n", elapsedS, (InstCount / elapsedS) / 1000000.0);
     }
 
 	return 0;

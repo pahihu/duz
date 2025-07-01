@@ -19,7 +19,9 @@ echo "      TRANS DECK: $inp5.tra"
 echo "==============================================================="
 echo
 
+rm -f $inp.prn
 rm -f $inp5.tra
+
 ./mix -a $asminp -p 2>&1 | tee $inp.prn
 
 TS=$(date +%Y%m%d-%H%M%S)

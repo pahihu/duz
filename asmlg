@@ -21,10 +21,15 @@ echo "     PRINTER LOG: $inp.log"
 echo "==============================================================="
 echo
 
+rm -f $inp.prn
 rm -f $inp5.tra
-./mix -a $asminp -p 2>&1 | tee $inp.prn
+rm -f $inp.tre
+rm -f $inp.log
 
 rm -f printer
+
+./mix -a $asminp -p 2>&1 | tee $inp.prn
+
 cat cardload.dek $inp5.tra >reader
 
 if [ ! -z $MIXTRACE ];
