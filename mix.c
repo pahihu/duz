@@ -44,7 +44,8 @@
  *              refactored logging
  *              refactored options, added MIXCONFIG env.var
  *              added KIPS rating
- *              remove DEC 026/029, MIX/360 is 64-char card code
+ *              removed DEC 026/029, MIX/360 is 64-char card code
+ *              replaced most shift operations w/ MOD and DIV
  *  250630AP    added memory access checking
  *              fixed MOVE, Go button
  *              refactored blkRead/blkWrite
@@ -279,13 +280,17 @@ unsigned IX_MASK;
 #define	SM_WORD		SM_MASK(30)
 #define MSB(x)		((x) & SM_MSB)
 #define MAG(x)		((x) & SM_WORD)
-#define R(x)		((x) & 07)
-#define L(x)		R((x) >> 3)
-#define FIELD(x,y)	((R(x) << 3) + R(y))
+
+#define MOD         %
+#define DIV         /
+#define R(x)		((x) MOD 8)
+#define L(x)		R((x) DIV 8)
+#define FIELD(x,y)	((8 * R(x)) + R(y))
 #define	FULL		FIELD(0,5)
-#define	BYTE(x)		((x) & 077)
 #define BYTES		5
-#define TRACK(x)    BYTE((x) >> 6)
+#define BYTESIZE    64
+#define	BYTE(x)		((x) MOD BYTESIZE)
+#define TRACK(x)    BYTE((x) / BYTESIZE)
 #define PLUS(x)     (SIGN(x) ? '-' : '+')
 #define ONOFF(x)    ((x) ? "ON ": "OFF")
 #define ASONOFF(x)  ((x) ? ON : OFF)
@@ -645,10 +650,10 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
     shmt = shmt % 60;
 	for (i = 0; i < shmt; i++) {
 		sav = MSB(a);
-		a = MAG(a << 1);
+		a = MAG(2 * a);
 		if (MSB(x))
 			a++;
-		x = MAG(x << 1);
+		x = MAG(2 * x);
 		if (circ && sav)
 			x++;
 	}
@@ -663,11 +668,11 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 	
     shmt = shmt % 60;
 	for (i = 0; i < shmt; i++) {
-		sav = 1 & x;
-		x >>= 1;
-		if (1 & a)
+		sav = x MOD 2;
+		x /= 2;
+		if (a MOD 2)
 			x += SM_MSB;
-		a >>= 1;
+		a /= 2;
 		if (circ && sav)
 			a += SM_MSB;
 	}
@@ -865,8 +870,8 @@ void SaveSTATE(Word loc)
 		ctlmem[i + 1] = reg[i];
 
     /* TBD MIXMASTER */
-	w  = MAG(P); w <<= 6;
-	w += FIELD(OT,CI); w <<= 12;
+	w  = MAG(P);       w *= BYTESIZE;
+	w += FIELD(OT,CI); w *= (BYTESIZE * BYTESIZE);
 	w += MAG(rJ);
 	ctlmem[1] = w;
 
@@ -885,8 +890,8 @@ void RestoreSTATE(void)
 	
     /* TBD MIXMASTER */
 	w  = ctlmem[1];
-	rJ = A_MASK & w; w >>= 12;
-	f  = BYTE(w); w >>= 6;
+	rJ = A_MASK & w; w /= BYTESIZE * BYTESIZE;
+	f  = BYTE(w);    w /= BYTESIZE;
 	OT = L(f); CI = R(f);
 	P  = A_MASK & w;
 
@@ -1411,7 +1416,7 @@ Word Pack(Byte *buf)
 	
 	w = 0;
 	for (i = 0; i < BYTES; i++)
-		w = (w << 6) + buf[i];
+		w = (w * BYTESIZE) + buf[i];
 	return w;
 }
 
@@ -1422,7 +1427,7 @@ void UnPack(Word w, Byte *buf)
 	
 	for (i = BYTES; i >= 1; i--) {
 		buf[i - 1] = BYTE(w);
-		w >>= 6;
+		w /= BYTESIZE;
 	}
 }
 
@@ -1787,7 +1792,7 @@ void devINP(int u, Word M)
 		if (!devStuck(u)) {
 			if (delta)
 				blkSeek(u, new_pos);
-        	delta += IOchar[x].rot_tyme * Diff(Tyme & 63, BYTE(rX)) / 64.0;
+            delta += IOchar[x].rot_tyme * Diff(Tyme MOD BYTESIZE, BYTE(rX)) / (double)BYTESIZE;
     	}
 	} else if (x != DEV_CR && x != DEV_PT && x != DEV_TT) {
 		errmsg = "UNSUPPORTED"; goto ErrOut;
@@ -1833,7 +1838,7 @@ void devOUT(Word u,Word M)
 		if (!devStuck(u)) {
 			if (delta)
 				blkSeek(u, new_pos);
-            delta += IOchar[x].rot_tyme * Diff(Tyme & 63, BYTE(rX)) / 64.0;
+            delta += IOchar[x].rot_tyme * Diff(Tyme MOD BYTESIZE, BYTE(rX)) / (double)BYTESIZE;
         }
 	} else if (DEV_CR < x) {
         if (x == DEV_PT) {
@@ -1854,7 +1859,7 @@ ErrOut:
 	DEV_ErrorLoc(u, M, "OP.OUT %s", errmsg);
 }
 
-#define MM(c,f)	(((f) << 6) + (c))
+#define MM(c,f)	(((f) * BYTESIZE) + (c))
 static struct {
 	char *nm;
 	int  c0de;
@@ -2675,9 +2680,9 @@ void PrintList(char *needs, Word w, Word OLDP, char *line)
     if (NEEDAWS) {
 	   	if ('A' == NEEDAWS) {
             INST = w; w = MAG(w);
-	        C = BYTE(w); w >>= 6;
-	        F = BYTE(w); w >>= 6;
-	        I = BYTE(w); w >>= 6;
+	        C = BYTE(w); w /= BYTESIZE;
+	        F = BYTE(w); w /= BYTESIZE;
+	        I = BYTE(w); w /= BYTESIZE;
 	        A = A_MASK & w; if (SIGN(INST)) A += SM_SIGN;
 		   	aprint4(A); bprint(I); bprint(F); bprint(C);
     	} else if ('W' == NEEDAWS) {
@@ -2807,7 +2812,7 @@ int Assemble(char *line)
         found = FindOp();
         if (found--) {
             C = opcodes[found].c0de; 
-            F = BYTE(C >> 6);
+            F = BYTE(C / BYTESIZE);
             C = BYTE(C);
             
             A = Apart();
@@ -2818,7 +2823,13 @@ int Assemble(char *line)
 	            	I = BYTE(I); AsmError(EA_TBIGFI);
                 }
 			}
-            MemWrite(P, FULL, w = SIGN(A) + (MAG(A) << 18) + (BYTE(I) << 12) + (BYTE(F) << 6) + C); P++;
+			w  = MAG(A);  w *= BYTESIZE;
+			w += BYTE(I); w *= BYTESIZE;
+			w += BYTE(F); w *= BYTESIZE;
+			w += C;
+            w += SIGN(A);
+            MemWrite(P, FULL, w);
+            smINC(&P);
             NEEDAWS = 'A';
         } else if (!strcmp(OP, "ORIG")) {
 	        w = Wvalue();
@@ -2828,14 +2839,14 @@ int Assemble(char *line)
             P = w;
         }
         else if (!strcmp(OP, "CON ")) {
-            MemWrite(P, FULL, w = Wvalue()); P++;
+            MemWrite(P, FULL, w = Wvalue()); smINC(&P);
             NEEDAWS = 'W';
         } else if (!strcmp(OP, "ALF ")) {
             Byte buf[BYTES];
             for (i = 0; i < BYTES; i++) {
                 buf[i] = cr_a2m[CH]; NEXT();
             }
-            MemWrite(P, FULL, w = Pack(buf)); P++;
+            MemWrite(P, FULL, w = Pack(buf)); smINC(&P);
             ADDRESS[5] = 0;
             NEEDAWS = 'W';
         }
@@ -2951,7 +2962,7 @@ void decode(Word C, Word F)
 		if (4 == strlen(s))
 			strcpy(mnemo, s);
 		else
-			strncpy(mnemo, s + 4 * (C & 07), 4);
+			strncpy(mnemo, s + 4 * (C MOD 8), 4);
 		if (*mnemo < 'A') {
 			s = mnemos[(Byte) *mnemo];
 			mnemo[0] = '\0';
@@ -2966,7 +2977,7 @@ void decode(Word C, Word F)
 	}
 	s = strchr(mnemo, 'r');
 	if (s)
-		*s = regnames[C & 07];
+		*s = regnames[C MOD 8];
 }
 
 void Status(Word P)
@@ -2976,9 +2987,9 @@ void Status(Word P)
 	int i;
 	
 	INST = MemRead(P); w = MAG(INST);
-	C = BYTE(w); w >>= 6;
-	F = BYTE(w); w >>= 6;
-	I = BYTE(w); w >>= 6;
+	C = BYTE(w); w /= BYTESIZE;
+	F = BYTE(w); w /= BYTESIZE;
+	I = BYTE(w); w /= BYTESIZE;
 	A = A_MASK & w; if (SIGN(INST)) A += SM_SIGN;
 	M = I ? smADD(A, reg[I]) : A;
 	decode(C, F);
@@ -2990,33 +3001,17 @@ void Status(Word P)
 N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
 	if (0 == (TraceCount++ % 31))
-		Print("   LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
-	Print("%c%05o %04d ", ssta[STATE], P, freq[P] % 9999);
+		Print("    LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
+	Print("%c%c%05o %04d ", ssta[STATE], PLUS(P), MAG(P), freq[P] % 9999);
     aprint4(A); bprint(I); bprint(F); bprint(C);
 	Print("%s ", mnemo);
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
 
-#if 0
-    xprin(A);
-    i = 0;
-    if (I) Print(",%d", I);
-    else i += 2;
-    j = 5;
-    if (F) {
-        if ((RANGE(C,1,4) || RANGE(C,8,33) || RANGE(C,56,63))
-                && ((32 == C && 2 != F) || (32 != C && 5 != F)))
-        {
-            Print("(%o:%o)", L(F), R(F)); j = 0;
-        } else if (RANGE(C,34,38)) {
-            Print("(%02o) ", F); j = 0;
-        }
-    }
-    i += j;
-    if (i)
-        Print("%*s", i, " ");
-#endif
-
-    if (RANGE(C,1,4) || RANGE(C,8,23) || RANGE(C,56,63)) {
+    if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
+        || RANGE(C,8,23)
+        || (56 == C && 6 != F)      /*!FCMP*/
+        || RANGE(C,57,63))
+    {
         GetV(M, F, &OP);
         wprint(OP);
     } else {
@@ -3051,7 +3046,7 @@ Word ConvertNum(Word sum, Word w, int *pscale)
 	scale = *pscale;
 	for (i = 0; i < 5; i++) {
 		sum += scale * (BYTE(w) % 10);
-		w >>= 6; scale *= 10;
+		w /= BYTESIZE; scale *= 10;
 	}
 	*pscale = scale;
 	return sum;
@@ -3110,9 +3105,9 @@ A2:
     if (CheckMemRead(L))
         return 1;
     INST = MemRead(L); w = MAG(INST);
-	C = BYTE(w); w >>= 6;
-	F = BYTE(w); w >>= 6;
-	I = BYTE(w); w >>= 6;
+	C = BYTE(w); w /= BYTESIZE;
+	F = BYTE(w); w /= BYTESIZE;
+	I = BYTE(w); w /= BYTESIZE;
 	A = A_MASK & w; if (SIGN(INST)) A += SM_SIGN;
 
     IGNORE_VALUE(F);
@@ -3153,9 +3148,9 @@ int Step(void)
         return Stop();
 	}
 	IR = MemRead(P); w = MAG(IR);
-	C = BYTE(w); w >>= 6;
-	F = BYTE(w); w >>= 6;
-	I = BYTE(w); w >>= 6;
+	C = BYTE(w); w /= BYTESIZE;
+	F = BYTE(w); w /= BYTESIZE;
+	I = BYTE(w); w /= BYTESIZE;
 	A = A_MASK & w; if (SIGN(IR)) A += SM_SIGN;
 	M = A;
     if (I) {
@@ -3475,11 +3470,11 @@ int Step(void)
         case 6: /*JrE*/
             if (CheckBinaryOption())
                 return 1;
-            cond = 0 == (MAG(w) & 1); break;
+            cond = 0 == (MAG(w) MOD 2); break;
         case 7: /*JrO*/
             if (CheckBinaryOption())
                 return 1;
-            cond = 1 == (MAG(w) & 1); break;
+            cond = 1 == (MAG(w) MOD 2); break;
 		default:
 			return FieldError(F);
 		}
