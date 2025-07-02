@@ -763,8 +763,6 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 #define FP_REPRB	(00001000000U)
 #define FP_Q		(BYTESIZE >> 1)
 
-enum {FP_NONE, FP_EXPUNF, FP_EXPOVF} FPERR;
-
 void fpFREXP(Word u, Word *e, Word *f)
 {
 	*f = SIGN(u) + field(u, FIELD(2,5));
@@ -772,42 +770,39 @@ void fpFREXP(Word u, Word *e, Word *f)
 }
 
 /* assume |f| < b */
-Word fpNORM(int e, Word f)
+Word fpNORM(int e, Word hi_f, Word lo_f)
 {
 	Word w;
-	Word fx;
 
-	fx = 0;
 /*N1*/
-	if (MAG(f) >= FP_ONE)
+	if (MAG(hi_f) >= FP_ONE)
 		goto N4;
-	if (!MAG(f)) {
+	if (!MAG(hi_f)) {
 		e = 0; goto N7;
 	}
 N2:
-	if (MAG(f) >= FP_REPRB)
+	if (MAG(hi_f) >= FP_REPRB)
 		goto N5;
 /*N3*/
-	smSLAX(&f, &fx, f, fx, 6, 0);
+	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 6, 0);
 	e--;
 	goto N2;
-N4: smSRAX(&f, &fx, f, fx, 6, 0);
+N4: smSRAX(&hi_f, &lo_f, hi_f, lo_f, 6, 0);
 	e++;
-N5:	if (field(fx, FIELD(1,1)) > FP_Q) {
-		smINC(&f);
+N5:	if (field(lo_f, FIELD(1,1)) > FP_Q) {
+		smINC(&hi_f);
 	}
-	fx = 0;
-	if (FP_ONE == MAG(f))
+	lo_f = 0;
+	if (FP_ONE == MAG(hi_f))
 		goto N4;
 N6:
 	if (-FP_Q < e) {
-		FPERR = FP_EXPOVF;
+		OT = ON; CI = GREATER;
 	} else if (e > FP_Q - 1) {
-		FPERR = FP_EXPUNF;
-	} else
-		FPERR = FP_NONE;
+		OT = ON; CI = LESS;
+	}
 N7:	e += FP_Q;
-	w = f + (e << (4*6));
+	w = hi_f + (e << (4*6));
 	return w;
 }
 
@@ -839,7 +834,7 @@ Word fpADD(Word u, Word v)
 	hi_wf += SIGN(vf);
 	smDADD(&hi_wf, &wf, hi_wf, wf, uf);
 A7:
-	w = fpNORM(we, wf); /* TBD */
+	w = fpNORM(we, hi_wf, wf);
 	return w;
 }
 
@@ -860,7 +855,7 @@ Word fpDIV(Word u, Word v)
 
 Word fpFLOT(Word u)
 {
-    return fpNORM(FP_Q + 5, u);
+    return fpNORM(FP_Q + 5, u, 0);
 }
 
 Word fpCMP(Word u, Word v)
