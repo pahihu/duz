@@ -5,9 +5,7 @@ then
   exit 1
 fi
 
-asminp=$1
-inp=$(basename $asminp .mix)
-inp5=$(echo $asminp | cut -c -5)
+inp=$1
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo
@@ -15,14 +13,19 @@ echo "*** $TS ASML TASK STARTED *************************"
 echo
 echo "==============================================================="
 echo "ASSEMBLY LISTING: $inp.prn"
-echo "      TRANS DECK: $inp5.tra"
+echo "      TRANS DECK: $inp.tra"
 echo "==============================================================="
 echo
 
 rm -f $inp.prn
-rm -f $inp5.tra
+rm -f $inp.tra
 
-./mix -a $asminp -p 2>&1 | tee $inp.prn
+if [ ! -z $MIXTRACE ];
+then
+  ./mix -t $MIXTRACE -a $inp.mix -p 2>&1 | tee $inp.prn
+else
+  ./mix -a $inp.mix -p 2>&1 | tee $inp.prn
+fi
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo

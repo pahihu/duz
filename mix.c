@@ -40,6 +40,7 @@
  *
  *  History:
  *  ========
+ *  250702AP    free fmt asm
  *  250701AP    fixed double-indexing in assembler
  *              refactored logging
  *              refactored options, added MIXCONFIG env.var
@@ -2658,19 +2659,24 @@ Word Wvalue(void)
     return v;
 }
 
-char* GetWord(char *dst, char *src, int n)
+char* GetWord(char *dst, char *src, int n, int alf)
 {
-    int i, ch;
+    int i;
 
-    ch = *src;
-    while (ch && (';' != ch) && (ch  < 32))
-        ch = *src++;
-    for (i = 0; i < n; i++) {
-        ch = *src;
-        if (';' != ch && ch > 32) {
-            *dst++ = ch; src++;
-        }
+    i = 0;
+    while (*src && *src <= 32) {
+      src++; i++;
+      if (alf && i > 1)
+        break;
     }
+    for (i = 0; i < n; i++) {
+        if (!*src)
+            break;
+        if (alf || (!alf && *src > 32))
+            *dst++ = *src++;
+    }
+    while (*src && *src > 32)
+        src++;
     return src;
 }
 
@@ -2777,11 +2783,13 @@ int Assemble(char *line)
     if (!FF || '*' == line[0]) {
         strncpy(LINE, line, MAX_LINE);
     } else {
+        MemSet(LINE, ' ', MAX_LINE);
         char *ptr = line;
-        if (' ' != *ptr)
-            ptr = GetWord(&LINE[0], ptr, 10);
-        ptr = GetWord(&LINE[11], ptr, 4);
-        ptr = GetWord(&LINE[16], ptr, MAX_LINE - 14);
+        if (' ' != *ptr) {
+            ptr = GetWord(&LINE[0], ptr, 10, 0);
+        }
+        ptr = GetWord(&LINE[11], ptr, 4, 0);
+        ptr = GetWord(&LINE[16], ptr, MAX_LINE - 14, !strncmp(LINE + 11, "ALF ", 4));
     }
     LINE[MAX_LINE] = 0;
     i = MAX_LINE - 1;
@@ -2898,7 +2906,7 @@ Out:
 
 int Asm(const char *nm)
 {
-    char *ptr, line[MAX_LINE+1], path[MAX_LINE+1];
+    char line[MAX_LINE+1], path[MAX_LINE+1];
     int n, failed;
     FILE *fd;
 
@@ -2917,8 +2925,11 @@ int Asm(const char *nm)
     failed = 0;
     P = 0; OPEND = OFF;
 
-    LNO = 1; ptr = fgets(line, sizeof(line), fd);
-    while (ptr && !feof(fd)) {
+    LNO = 0; 
+    while (!feof(fd)) {
+        if (!fgets(line, sizeof(line), fd))
+            break;
+        LNO++;
         n = strlen(line);
         while (n && IsCRLF(line[n-1]))
             n--;
@@ -2926,7 +2937,6 @@ int Asm(const char *nm)
         failed += n ? Assemble(line) : 0;
         if (OPEND)
             break;
-        LNO++; ptr = fgets(line, sizeof(line), fd);
     }
     fclose(fd);
     Info("ASSEMBLE %s\n", failed ? "FAILED" : "DONE");

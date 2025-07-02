@@ -1,51 +1,49 @@
 #!/bin/bash
+
 if [ $# -ne 1 ];
 then
   echo "asmlg <input.mix>"
   exit 1
 fi
 
-asminp=$1
-inp=$(basename $asminp .mix)
-inp5=$(echo $asminp | cut -c -5)
+inp=$1
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo
 echo "*** $TS ASMLG TASK STARTED ************************"
 echo
 echo "==============================================================="
-echo "ASSEMBLY LISTING: $inp.prn"
-echo "      TRANS DECK: $inp5.tra"
 echo "    TRACE OUTPUT: $inp.tre"
 echo "     PRINTER LOG: $inp.log"
 echo "==============================================================="
 echo
 
-rm -f $inp.prn
-rm -f $inp5.tra
 rm -f $inp.tre
 rm -f $inp.log
 
 rm -f printer
 
-./mix -a $asminp -p 2>&1 | tee $inp.prn
+./asml $inp
 
-cat cardload.dek $inp5.tra >reader
-
-if [ ! -z $MIXTRACE ];
+if [ -s $inp.tra ];
 then
-  ./mix -t $MIXTRACE -g > $inp.tre 2>&1
+  cat cardload.dek $inp.tra >reader
+  if [ ! -z $MIXTRACE ];
+  then
+    ./mix -t $MIXTRACE -g > $inp.tre 2>&1
+  else
+    ./mix -g 2>&1 | tee $inp.tre
+  fi
+
+  if [ -s printer ];
+  then
+    cp printer $inp.log
+  fi
 else
-  ./mix -g 2>&1 | tee $inp.tre
-fi
-
-if [ -s printer ];
-then
-  cp printer $inp.log
+  echo "$inp.tra not found"
 fi
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo
 echo "*** $TS ASMLG TASK ENDED **************************"
 echo
-
