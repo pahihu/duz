@@ -21,7 +21,6 @@
  *  TODO
  *  ====
  *  - floating-point attachment
- *  - asm: free fmt
  *
  *  Instruction extensions
  *  ======================
@@ -41,6 +40,7 @@
  *  History:
  *  ========
  *  250702AP    free fmt asm
+ *				FP skeletons
  *  250701AP    fixed double-indexing in assembler
  *              refactored logging
  *              refactored options, added MIXCONFIG env.var
@@ -182,6 +182,7 @@ char *strtoupper(char *s)
 #define MIN(x,y)        ((x) < (y) ? (x) : (y))
 #define MAX(x,y)        ((x) > (y) ? (x) : (y))
 #define ABS(x)          ((x) < 0 ? -(x) : (x))
+#define SWAP(x,y)		{ Word tmp = x; x = y; y = tmp; }
 
 
 typedef unsigned int Word;
@@ -618,7 +619,7 @@ Word smNEG(Word x)
 
 Word smADD(Word x, Word y)
 {
-	Word z, tmp;
+	Word z;
 
 	CY=OFF;
 	if (SIGN(x) == SIGN(y)) {
@@ -628,9 +629,8 @@ Word smADD(Word x, Word y)
 		}
 		return SIGN(x) + z;
 	}
-	if (SIGN(y)) {
-		tmp = y; y = x; x = tmp;
-	}
+	if (SIGN(y))
+		SWAP(x, y);
 		
 	if (MAG(y) >= MAG(x))
 		return MAG(y) - MAG(x);
@@ -758,32 +758,112 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 
 /* ============== F P  A R I T H M E T I C ================== */
 
-Word fpADD(Word u, Word w)
+#define FP_P		4
+#define FP_ONE		(00100000000U)
+#define FP_REPRB	(00001000000U)
+#define FP_Q		(BYTESIZE >> 1)
+
+enum {FP_NONE, FP_EXPUNF, FP_EXPOVF} FPERR;
+
+void fpFREXP(Word u, Word *e, Word *f)
+{
+	*f = SIGN(u) + field(u, FIELD(2,5));
+	*e = field(u, FIELD(1,1));
+}
+
+/* assume |f| < b */
+Word fpNORM(int e, Word f)
+{
+	Word w;
+	Word fx;
+
+	fx = 0;
+/*N1*/
+	if (MAG(f) >= FP_ONE)
+		goto N4;
+	if (!MAG(f)) {
+		e = 0; goto N7;
+	}
+N2:
+	if (MAG(f) >= FP_REPRB)
+		goto N5;
+/*N3*/
+	smSLAX(&f, &fx, f, fx, 6, 0);
+	e--;
+	goto N2;
+N4: smSRAX(&f, &fx, f, fx, 6, 0);
+	e++;
+N5:	if (field(fx, FIELD(1,1)) > FP_Q) {
+		smINC(&f);
+	}
+	fx = 0;
+	if (FP_ONE == MAG(f))
+		goto N4;
+N6:
+	if (-FP_Q < e) {
+		FPERR = FP_EXPOVF;
+	} else if (e > FP_Q - 1) {
+		FPERR = FP_EXPUNF;
+	} else
+		FPERR = FP_NONE;
+N7:	e += FP_Q;
+	w = f + (e << (4*6));
+	return w;
+}
+
+void smDADD(Word *pa, Word *px, Word a, Word x, Word v)
+{
+}
+
+Word fpADD(Word u, Word v)
+{
+	Word ue, uf, ve, vf;
+	Word we, wf, hi_wf;
+	Word w;
+	
+/*A1.A2*/
+	if (MAG(v) < MAG(u))
+		SWAP(v, u);
+		
+	/* u >= v */
+	fpFREXP(u, &ue, &uf);
+	fpFREXP(v, &ve, &vf);
+/*A3*/
+	we = ue;
+/*A4*/
+	if (ue - ve >= FP_P + 2) {
+		wf = uf; goto A7;
+	}
+/*A5*/
+	smSRAX(&hi_wf, &wf, vf, 0, 6*(ue - ve), 0);
+	hi_wf += SIGN(vf);
+	smDADD(&hi_wf, &wf, hi_wf, wf, uf);
+A7:
+	w = fpNORM(we, wf); /* TBD */
+	return w;
+}
+
+Word fpSUB(Word u, Word v)
+{
+    return fpADD(u, smNEG(v));
+}
+
+Word fpMUL(Word u, Word v)
 {
     return UNDEF;
 }
 
-Word fpSUB(Word u, Word w)
-{
-    return UNDEF;
-}
-
-Word fpMUL(Word u, Word w)
-{
-    return UNDEF;
-}
-
-Word fpDIV(Word u, Word w)
+Word fpDIV(Word u, Word v)
 {
     return UNDEF;
 }
 
 Word fpFLOT(Word u)
 {
-    return UNDEF;
+    return fpNORM(FP_Q + 5, u);
 }
 
-Word fpCMP(Word u, Word w)
+Word fpCMP(Word u, Word v)
 {
     return UNDEF;
 }
