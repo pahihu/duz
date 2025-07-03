@@ -39,6 +39,9 @@
  *
  *  History:
  *  ========
+ *  250703AP    binary and BYTE shifts
+ *              fpMUL, fpDIV skeletons
+ *              added MIXTRACE env.var
  *  250702AP    free fmt asm
  *				FP skeletons
  *  250701AP    fixed double-indexing in assembler
@@ -295,6 +298,7 @@ unsigned IX_MASK;
 #define BYTES		5
 #define BYTESIZE    64
 #define	BYTE(x)		((x) MOD BYTESIZE)
+#define MSBYTE(x)   ((x) & 07700000000U)
 #define TRACK(x)    BYTE((x) / BYTESIZE)
 #define PLUS(x)     (SIGN(x) ? '-' : '+')
 #define ONOFF(x)    ((x) ? "ON ": "OFF")
@@ -647,11 +651,72 @@ Word smSUB(Word x, Word y)
 	return smADD(x, smNEG(y));
 }
 
+void smDEC(Word *pw)
+{
+    *pw = smSUB(*pw, 1);
+}
+
 Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
+    int signA, signX;
 	
-    shmt = shmt % 60;
+    signA = SIGN(a); a = MAG(a);
+    signX = SIGN(x); x = MAG(x);
+
+    shmt = shmt MOD 10;
+	for (i = 0; i < shmt; i++) {
+		sav = MSBYTE(a);
+		a = MAG(BYTESIZE * a);
+        a += MSBYTE(x) >> (4*6);
+		x = MAG(BYTESIZE * x);
+		if (circ && sav)
+			x += sav >> (4*6);
+	}
+    a += signA;
+    x += signX;
+
+	*pa = a;
+	if (px) *px = x;
+	return a;
+}
+
+Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
+{
+	int i, sav;
+    Word signA, signX;
+	
+    signA = SIGN(a); a = MAG(a);
+    signX = SIGN(x); x = MAG(x);
+
+    shmt = shmt MOD 10;
+	for (i = 0; i < shmt; i++) {
+		sav = BYTE(x);
+		x /= BYTESIZE;
+		x += BYTE(a) << (4*6);
+		a /= BYTESIZE;
+		if (circ && sav)
+			a += sav << (4*6);
+	}
+
+    a += signA;
+    x += signX;
+
+	*pa = a;
+	if (px) *px = x;
+	return a;
+}
+
+
+Word smSLB(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
+{
+	int i, sav;
+    Word signA, signX;
+    
+    signA = SIGN(a); a = MAG(a);
+    signX = SIGN(x); x = MAG(x);
+	
+    shmt = shmt MOD 60;
 	for (i = 0; i < shmt; i++) {
 		sav = MSB(a);
 		a = MAG(2 * a);
@@ -661,16 +726,23 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 		if (circ && sav)
 			x++;
 	}
+    a += signA;
+    x += signX;
+
 	*pa = a;
 	if (px) *px = x;
 	return a;
 }
 
-Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
+Word smSRB(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
+    Word signA, signX;
 	
-    shmt = shmt % 60;
+    signA = SIGN(a); a = MAG(a);
+    signX = SIGN(x); x = MAG(x);
+	
+    shmt = shmt MOD 60;
 	for (i = 0; i < shmt; i++) {
 		sav = x MOD 2;
 		x /= 2;
@@ -680,6 +752,10 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 		if (circ && sav)
 			a += SM_MSB;
 	}
+
+    a += signA;
+    x += signX;
+
 	*pa = a;
 	if (px) *px = x;
 	return a;
@@ -736,15 +812,15 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
         return;
 	}
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
-    smSLAX(&ma, &mx, ma, mx, 1, 0);
+    smSLB(&ma, &mx, ma, mx, 1, 0);
 	for (i = 0; i < 30; i++) {
 		d = 0;
 		if (ma >= mv) {
 			d = 1; ma -= mv;
 		}
-		smSLAX(&ma, &mx, ma, mx, 1, 0); mx += d;
+		smSLB(&ma, &mx, ma, mx, 1, 0); mx += d;
 	}
-    ma >>= 1;
+    ma = ma DIV 2;
     /* rX: ma - rem, rA: mx - quo */
 	if (SIGN(a) != SIGN(v))
 		mx += SM_SIGN;
@@ -772,7 +848,7 @@ void fpFREXP(Word u, Word *e, Word *f)
 /* assume |f| < b */
 Word fpNORM(int e, Word hi_f, Word lo_f)
 {
-	Word w;
+	Word f11, w;
 
 /*N1*/
 	if (MAG(hi_f) >= FP_ONE)
@@ -784,18 +860,22 @@ N2:
 	if (MAG(hi_f) >= FP_REPRB)
 		goto N5;
 /*N3*/
-	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 6, 0);
+	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, 0);
 	e--;
 	goto N2;
-N4: smSRAX(&hi_f, &lo_f, hi_f, lo_f, 6, 0);
+N4: smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, 0);
 	e++;
-N5:	if (field(lo_f, FIELD(1,1)) > FP_Q) {
+N5:	f11 = field(lo_f, FIELD(1,1));
+    if (FP_Q < f11) {
 		smINC(&hi_f);
-	}
+	} else if (FP_Q == f11) {
+        if ((MAG(hi_f) + FP_Q) MOD 2 == 0)
+            smDEC(&hi_f);
+    }
 	lo_f = 0;
 	if (FP_ONE == MAG(hi_f))
 		goto N4;
-N6:
+/*N6*/
 	if (-FP_Q < e) {
 		OT = ON; CI = GREATER;
 	} else if (e > FP_Q - 1) {
@@ -806,8 +886,57 @@ N7:	e += FP_Q;
 	return w;
 }
 
-void smDADD(Word *pa, Word *px, Word a, Word x, Word v)
+void uDADD(unsigned *phi, unsigned *plo, unsigned hiX, unsigned loX, unsigned hiY, unsigned loY)
 {
+    unsigned hiZ, loZ;
+
+    loZ = loX + loY;
+    if (loZ > SM_WORD) {
+        loZ = MAG(loZ); hiY++;
+    }
+    hiZ = hiX + hiY;
+
+    *phi = hiZ;
+    *plo = loZ;
+}
+
+/* |x| >= |y| */
+void uDSUB(unsigned *phi, unsigned *plo, unsigned hiX, unsigned loX, unsigned hiY, unsigned loY)
+{
+    if (loX >= loY) {
+        *plo = loX - loY;
+    } else {
+        *plo = loY + (SM_MSB << 1) - loX;
+        hiY++;
+    }
+    *phi = hiX - hiY;
+}
+
+void smDADD(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
+{
+    Word hiZ, loZ;
+
+	CY=OFF;
+	if (SIGN(hiX) == SIGN(hiY)) {
+        uDADD(&hiZ, &loZ, MAG(hiX), MAG(loX), MAG(hiY), MAG(loY));
+		if (hiZ > SM_WORD) {
+			hiZ = MAG(hiZ); CY = ON;
+		}
+        *phi = SIGN(hiX) + hiZ;
+        *plo = SIGN(hiX) + loZ;
+        return;
+	}
+	if (SIGN(hiY)) {
+		SWAP(hiX, hiY);
+		SWAP(loX, loY);
+    }
+		
+    if (MAG(hiY) > MAG(hiX) || (MAG(hiY) == MAG(hiX) && MAG(loY) >= MAG(loX))) {
+        uDSUB(phi, plo, MAG(hiY), MAG(loY), MAG(hiX), MAG(loX));
+    }        
+    uDSUB(&hiZ, &loZ, MAG(hiX), MAG(loX), MAG(hiY), MAG(loY));
+    *phi = SIGN(hiX) + hiZ;
+    *plo = SIGN(hiX) + loZ;
 }
 
 Word fpADD(Word u, Word v)
@@ -815,6 +944,8 @@ Word fpADD(Word u, Word v)
 	Word ue, uf, ve, vf;
 	Word we, wf, hi_wf;
 	Word w;
+
+    hi_wf = 0;
 	
 /*A1.A2*/
 	if (MAG(v) < MAG(u))
@@ -830,9 +961,9 @@ Word fpADD(Word u, Word v)
 		wf = uf; goto A7;
 	}
 /*A5*/
-	smSRAX(&hi_wf, &wf, vf, 0, 6*(ue - ve), 0);
+	smSRAX(&hi_wf, &wf, vf, 0, ue - ve, 0);
 	hi_wf += SIGN(vf);
-	smDADD(&hi_wf, &wf, hi_wf, wf, uf);
+	smDADD(&hi_wf, &wf, hi_wf, wf, uf, 0);
 A7:
 	w = fpNORM(we, hi_wf, wf);
 	return w;
@@ -845,12 +976,42 @@ Word fpSUB(Word u, Word v)
 
 Word fpMUL(Word u, Word v)
 {
-    return UNDEF;
+	Word ue, uf, ve, vf;
+	Word we, wf, hi_wf;
+	Word w;
+
+    hi_wf = 0; wf = 0;
+	
+	fpFREXP(u, &ue, &uf);
+	fpFREXP(v, &ve, &vf);
+
+    we = ue + ve - FP_Q;
+    smMUL(&hi_wf, &wf, uf, vf);
+
+    w = fpNORM(we, hi_wf, wf);
+    return w;
 }
 
 Word fpDIV(Word u, Word v)
 {
-    return UNDEF;
+	Word ue, uf, ve, vf;
+	Word we, hi_wf;
+    Word hi_uf, lo_uf;
+	Word re, w;
+
+    hi_wf = 0;
+    hi_uf = lo_uf = 0;
+	
+	fpFREXP(u, &ue, &uf);
+	fpFREXP(v, &ve, &vf);
+
+    we = ue - ve + FP_Q + 1;
+    /* b^-1 * uf / vf  */
+    smSRAX(&hi_uf, &lo_uf, uf, 0, 1, 0);
+    smDIV(&hi_wf, &re, hi_uf, lo_uf, vf);
+
+    w = fpNORM(we, hi_wf, 0);
+    return w;
 }
 
 Word fpFLOT(Word u)
@@ -3412,50 +3573,40 @@ int Step(void)
 		}
 		break;
 	case 6:
-		{	Word signA, signX;
-
-			if (SIGN(M)) {
-				return MIX_ErrorLoc("ILLEGAL SIGNED M=%c%05o", PLUS(M), MAG(M));
-			} else {
-				signA = SIGN(rA); signX = SIGN(rX);
-				switch(F){
-				case 0: /*SLA*/
-					rA = signA + smSLAX(&rA, NULL, MAG(rA), 0, 6*M, 0);
-					break;
-				case 1: /*SRA*/
-					rA = signA + smSRAX(&rA, NULL, MAG(rA), 0, 6*M, 0);
-					break;
-				case 2: /*SLAX*/
-					smSLAX(&rA, &rX, MAG(rA), MAG(rX), 6*M, 0);
-					rA += signA; rX += signX;
-					break;
-				case 3: /*SRAX*/
-					smSRAX(&rA, &rX, MAG(rA), MAG(rX), 6*M, 0);
-					rA += signA; rX += signX;
-					break;
-				case 4: /*SLC*/
-					smSLAX(&rA, &rX, MAG(rA), MAG(rX), 6*M, 1);
-					rA += signA; rX += signX;
-					break;
-				case 5: /*SRC*/
-					smSRAX(&rA, &rX, MAG(rA), MAG(rX), 6*M, 1);
-					rA += signA; rX += signX;
-					break;
-                case 6: /*SLB*/
-                    if (CheckBinaryOption())
-                        return 1;
-					smSLAX(&rA, &rX, MAG(rA), MAG(rX), M, 0);
-                    rA += signA; rX += signX;
-                    break;
-                case 7: /*SRB*/
-                    if (CheckBinaryOption())
-                        return 1;
-					smSRAX(&rA, &rX, MAG(rA), MAG(rX), M, 0);
-                    rA += signA; rX += signX;
-                    break;
-				default:
-					return FieldError(F);
-				}
+		if (SIGN(M)) {
+		    return MIX_ErrorLoc("ILLEGAL SIGNED M=%c%05o", PLUS(M), MAG(M));
+		} else {
+			switch(F){
+			case 0: /*SLA*/
+				smSLAX(&rA, NULL, rA, 0, M, 0);
+				break;
+			case 1: /*SRA*/
+				smSRAX(&rA, NULL, rA, 0, M, 0);
+				break;
+			case 2: /*SLAX*/
+				smSLAX(&rA, &rX, rA, rX, M, 0);
+				break;
+			case 3: /*SRAX*/
+				smSRAX(&rA, &rX, rA, rX, M, 0);
+				break;
+			case 4: /*SLC*/
+				smSLAX(&rA, &rX, rA, rX, M, 1);
+				break;
+			case 5: /*SRC*/
+				smSRAX(&rA, &rX, rA, rX, M, 1);
+				break;
+            case 6: /*SLB*/
+                if (CheckBinaryOption())
+                    return 1;
+				smSLB(&rA, &rX, rA, rX, M, 0);
+                break;
+            case 7: /*SRB*/
+                if (CheckBinaryOption())
+                    return 1;
+				smSRB(&rA, &rX, rA, rX, M, 0);
+                break;
+			default:
+				return FieldError(F);
 			}
 		}
 		break;
@@ -3619,7 +3770,7 @@ int Step(void)
 	    if (6 == F) {
     	    if (CheckFloatOption())
     	        return 1;
-            w = fpCMP(rA, MemRead(M));
+            w = fpCMP(MemRead(M), rA);
     	    Tyme += 2; TIMER += 2;
     	    return FieldError(F);
 	    } else {
@@ -3827,7 +3978,7 @@ void InitOptions(void)
     CARDCODE = CARD_MIX;
 }
 
-void InitMixConfig(const char *arg)
+void InitConfig(const char *arg)
 {
     while (arg && *arg) {
         switch (*arg++) {
@@ -3840,6 +3991,19 @@ void InitMixConfig(const char *arg)
         default:
             Usage();
         }
+    }
+}
+
+void InitTrace(const char *arg)
+{
+    while (arg && *arg) {
+	    switch (*arg++) {
+		case 'i': TRACEIO = ON; break;
+		case 'o': TRACEOP = ON; break;
+		case 'a': TRACEA  = ON; break;
+		default:
+		    Usage();
+		}
     }
 }
 
@@ -3876,10 +4040,10 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-o bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lpr] file1...\n");
+	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lpr] file1...\n");
     Print("options:\n");
     Print("    -g [unit]  push GO button on unit (def. card reader)\n");
-    Print("    -o bcfimx  MIX config (also from MIXCONFIG env.var):\n");
+    Print("    -c bcfimx  MIX config (also from MIXCONFIG env.var):\n");
     Print("                 b - binary MIX\n");
     Print("                 c - core memory (core.mem/core.ctl)\n");
     Print("                 f - floating-point attachment\n");
@@ -3894,7 +4058,7 @@ void Usage(void)
     Print("    -p         punch nonzero locations in TRANS fmt\n");
     Print("    -r         free fmt MIXAL\n");
     Print("    -s address set START address\n");
-    Print("    -t aio     enable tracing: Asm,Io,Op\n");
+    Print("    -t aio     enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
     Print("\n");
 	exit(1);
 }
@@ -4050,7 +4214,8 @@ int main(int argc, char*argv[])
     int nasmfiles;
 
     InitOptions();
-    InitMixConfig(getenv("MIXCONFIG"));
+    InitConfig(getenv("MIXCONFIG"));
+    InitTrace(getenv("MIXTRACE"));
 
     ASMONLY = OFF; u = CARD_READER;
     nasmfiles = 0;
@@ -4069,6 +4234,12 @@ int main(int argc, char*argv[])
         case '3': CARDCODE = CARD_MIX360; continue;
         /* case '6': CARDCODE = CARD_DEC026; continue; */
         /* case '9': CARDCODE = CARD_DEC029; continue; */
+        case 'c':
+			if (i + 1 < argc) {
+                InitConfig(argv[++i]);
+                continue;
+			}
+            break;
 		case 'g':
             CONFIG |= MIX_PUSHGO;
 			if (i + 1 < argc) {
@@ -4078,12 +4249,6 @@ int main(int argc, char*argv[])
                 }
 			}
 			continue;
-        case 'o':
-			if (i + 1 < argc) {
-                InitMixConfig(argv[++i]);
-                continue;
-			}
-            break;
         case 'a': ASMONLY = ON; continue;
         case 'd': DUMP = ON; continue;
         case 'l': LNKLD = ON; continue;
@@ -4097,17 +4262,8 @@ int main(int argc, char*argv[])
             break;
 		case 't':
 			if (i + 1 < argc) {
-				arg = argv[++i];
-                while (*arg) {
-					switch (*arg++) {
-					case 'i': TRACEIO = ON; break;
-					case 'o': TRACEOP = ON; break;
-					case 'a': TRACEA  = ON; break;
-					default:
-						Usage();
-					}
-				}
-				continue;
+                InitTrace(argv[++i]);
+                continue;
 			}
 			break;
 		}

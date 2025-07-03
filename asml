@@ -1,7 +1,7 @@
 #!/bin/bash
 if [ $# -ne 1 ];
 then
-  echo "asmlg <input.mix>"
+  echo "asmlg source[.mix]"
   exit 1
 fi
 
@@ -20,12 +20,7 @@ echo
 rm -f $inp.prn
 rm -f $inp.tra
 
-if [ ! -z $MIXTRACE ];
-then
-  ./mix -t $MIXTRACE -a $inp.mix -p 2>&1 | tee $inp.prn
-else
-  ./mix -a $inp.mix -p 2>&1 | tee $inp.prn
-fi
+./mix -a $inp.mix -p 2>&1 | tee $inp.prn
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo

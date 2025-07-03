@@ -20,14 +20,8 @@ call asml.bat %1
 
 copy/y cardload.dek+%1.tra reader
 
-if "%MIXTRACE%"=="" goto :notrace
-.\mix.exe -t %MIXTRACE% -g > %1.tre 2>&1
-goto printer
-
-:notrace
 .\mix.exe -g > %1.tre 2>&1
 
-:printer
 if exist "printer" copy/y printer %1.log
 goto end
 

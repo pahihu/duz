@@ -2,7 +2,7 @@
 
 if [ $# -ne 1 ];
 then
-  echo "asmlg <input.mix>"
+  echo "asmlg source[.mix]"
   exit 1
 fi
 
@@ -28,12 +28,7 @@ rm -f printer
 if [ -s $inp.tra ];
 then
   cat cardload.dek $inp.tra >reader
-  if [ ! -z $MIXTRACE ];
-  then
-    ./mix -t $MIXTRACE -g > $inp.tre 2>&1
-  else
-    ./mix -g 2>&1 | tee $inp.tre
-  fi
+  ./mix -g 2>&1 | tee $inp.tre
 
   if [ -s printer ];
   then
