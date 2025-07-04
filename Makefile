@@ -13,6 +13,9 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS)
 
+tenexp: tenexp.o
+	$(CC) $(LDFLAGS) -o $@ tenexp.o
+
 clean:
 	$(RM) $(TARGET)
 	$(RM) $(OBJS)

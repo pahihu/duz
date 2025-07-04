@@ -31,6 +31,9 @@
  *		FIX	 pp.224
  *		FCMP Ex.4.2.2-17 pp.244 (solution pp.615)
  *		FIX  subroutine Ex.4.2.1-14 (solution pp.612)
+ *      FP conversion Vol.2 pp.326
+ *          f*2^e, 2^e = F*10^E, then convert F*f to decimal
+ *          F*10^E, convert F, then multiply by the FP number 10^E
  *  - interrupt: INT Ex.1.4.4-18 pp.228 [d]
  *  - master: XEQ CPMr Ex.1.3.1-25 pp.139 (solution pp.510) [cgh]
  *  - double/indirect-indexing: Ex.2.2.2-5 (solution pp.541) [b]
@@ -39,6 +42,8 @@
  *
  *  History:
  *  ========
+ *  250704AP    fpCMP skeleton, FP_EPSILON
+ *              fp conversion tables
  *  250703AP    binary and BYTE shifts
  *              fpMUL, fpDIV skeletons
  *              added MIXTRACE env.var
@@ -839,6 +844,14 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 #define FP_REPRB	(00001000000U)
 #define FP_Q		(BYTESIZE >> 1)
 
+/* 
+ * Vol.2 pp. 234.
+ * 
+ *      e0 = b^(1-p), e >= 2*e0 / (1 - .5e0)^2 ~ 7.62942363516372e-06
+ *
+ */
+#define FP_EPSILON  (000000200U)
+
 void fpFREXP(Word u, Word *e, Word *f)
 {
 	*f = SIGN(u) + field(u, FIELD(2,5));
@@ -1019,9 +1032,45 @@ Word fpFLOT(Word u)
     return fpNORM(FP_Q + 5, u, 0);
 }
 
-Word fpCMP(Word u, Word v)
+void fpCMP(Word u, Word v)
 {
-    return UNDEF;
+    Word ue, uf, ve, vf;
+
+    if (!MAG(u) && !MAG(v)) {
+        CI = EQUAL;
+        return;
+    }
+
+    if (SIGN(u) == SIGN(v)) {
+	    fpFREXP(u, &ue, &uf);
+	    fpFREXP(v, &ve, &vf);
+        if (ue < ve) {
+            CI = SIGN(u) ? GREATER : LESS;
+            return;
+        } else if (ue > ve) {
+            CI = SIGN(u) ? LESS : GREATER;
+            return;
+        }
+        uf = MAG(uf);
+        vf = MAG(vf);
+        if (uf < vf) {
+            if (uf - vf <= FP_EPSILON) {
+                CI = EQUAL;
+                return;
+            }
+            CI = SIGN(u) ? GREATER : LESS;
+        } else {
+            if (vf - uf <= FP_EPSILON) {
+                CI = EQUAL;
+                return;
+            }
+            CI = SIGN(u) ? LESS : GREATER;
+        }
+    } else if (SIGN(u)) {
+        CI = LESS;
+    } else {
+        CI = GREATER;
+    }
 }
 
 Word fpFIX(Word u)
@@ -3770,7 +3819,7 @@ int Step(void)
 	    if (6 == F) {
     	    if (CheckFloatOption())
     	        return 1;
-            w = fpCMP(MemRead(M), rA);
+            fpCMP(MemRead(M), rA);
     	    Tyme += 2; TIMER += 2;
     	    return FieldError(F);
 	    } else {
