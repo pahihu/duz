@@ -20,6 +20,7 @@
  *
  *  TODO
  *  ====
+ *  - B^E table
  *  - floating-point attachment
  *
  *  Instruction extensions
@@ -43,7 +44,7 @@
  *  History:
  *  ========
  *  250704AP    fpCMP skeleton, FP_EPSILON
- *              fp conversion tables
+ *              10^E table
  *  250703AP    binary and BYTE shifts
  *              fpMUL, fpDIV skeletons
  *              added MIXTRACE env.var
