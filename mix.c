@@ -43,6 +43,8 @@
  *
  *  History:
  *  ========
+ *  250705AP    B^E table
+ *              added DoubleToFP/FPToDouble
  *  250704AP    fpCMP skeleton, FP_EPSILON
  *              10^E table
  *  250703AP    binary and BYTE shifts
@@ -125,6 +127,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <stdarg.h>
+#include <math.h>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/time.h>
@@ -210,7 +213,8 @@ Word CONFIG;
 #define CORE_MEM    "core.mem"
 #define CORE_CTL    "core.ctl"
 int MAX_MEM;
-#define TRACE       mem[MAX_MEM+1]
+#define ADDR_TRACE  (MAX_MEM+1)
+#define TRACE       mem[ADDR_TRACE]
 #define TIMER       mem[MAX_MEM+2]
 
 #define ADDR_RTC			10
@@ -840,6 +844,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 
 /* ============== F P  A R I T H M E T I C ================== */
 
+#define FP_B        BYTESIZE
 #define FP_P		4
 #define FP_ONE		(00100000000U)
 #define FP_REPRB	(00001000000U)
@@ -857,6 +862,96 @@ void fpFREXP(Word u, Word *e, Word *f)
 {
 	*f = SIGN(u) + field(u, FIELD(2,5));
 	*e = field(u, FIELD(1,1));
+}
+
+double FPToDouble(Word u)
+{
+    Word eq, f;
+    double d;
+    int i, sign, e;
+
+    fpFREXP(u, &eq, &f);
+    sign = SIGN(f);
+    f = MAG(f);
+
+    d = 0.0;
+    for (i = 0; i < 4; i++) {
+        d += BYTE(f);
+        d /= FP_B; f /= BYTESIZE;
+    }
+    e = eq - FP_Q;
+    if (e < 0) {
+        for (i = 0; i < -e; i++) {
+            d /= FP_B;
+        }
+    } else {
+        for (i = 0; i < e; i++) {
+            d *= FP_B;
+        }
+    }
+    return sign ? -d : d;
+}
+
+void Approximate(double f, int *fracs)
+{
+    int j;
+    double fpart, ipart;
+    int inc;
+
+    for (j = 0; j < BYTES; j++) {
+        fpart = modf(f, &ipart);
+        fracs[j] = (int)ipart;
+        f = FP_B * (f - ipart);
+    }
+    /* round */
+    inc = 0;
+    if (fracs[4] > FP_Q) {
+        inc = 1;
+    } else if (FP_Q == fracs[4]) {
+        if (0 == ((fracs[3] + FP_Q) & 1)) {
+            inc = 1;
+        }
+    }
+    for (j = 3; inc && (j >= 0); j--) {
+        fracs[j] += inc;
+        if (fracs[j] >= FP_B) {
+            fracs[j] %= FP_B;
+            inc = 1;
+        } else {
+            inc = 0;
+        }
+    }
+}
+
+Word DoubleToFP(double d)
+{
+    int i, e, eq, fracs[BYTES];
+    int sign;
+    Word w;
+
+    sign = d < 0.0;
+    d = fabs(d);
+
+    e = 0;
+    while (d < 1.0) {
+        d *= FP_B; e--;
+    }
+    while (d >= FP_B) {
+        d /= FP_B; e++;
+    }
+    Approximate(d, fracs); e++;
+    eq = e + FP_Q;
+    if (eq >= BYTESIZE) {
+        Warning("EXPONENT OVERFLOW %d", eq);
+    } else if (eq < 0) {
+        Warning("EXPONENT UNDERFLOW %d", eq);
+    }
+    for (i = 0; i < 4; i++) {
+        w = BYTESIZE * w + BYTE(fracs[i]);
+    }
+    w += BYTE(eq) << (4*6);
+    w += sign ? SM_SIGN : 0;
+    return w;
 }
 
 /* assume |f| < b */
@@ -960,7 +1055,7 @@ Word fpADD(Word u, Word v)
 	Word w;
 
     hi_wf = 0;
-	
+
 /*A1.A2*/
 	if (MAG(v) < MAG(u))
 		SWAP(v, u);

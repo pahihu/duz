@@ -13,10 +13,11 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS)
 
-tenexp: tenexp.o
-	$(CC) $(LDFLAGS) -o $@ tenexp.o
+fpexptab: fpexptab.o
+	$(CC) $(LDFLAGS) -o $@ fpexptab.o
 
 clean:
+	$(RM) fpexptab
 	$(RM) $(TARGET)
 	$(RM) $(OBJS)
 
