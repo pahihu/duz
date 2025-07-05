@@ -45,6 +45,8 @@
  *  ========
  *  250705AP    B^E table
  *              added DoubleToFP/FPToDouble
+ *				float AtomicExpr
+ *				fpFIX skeleton
  *  250704AP    fpCMP skeleton, FP_EPSILON
  *              10^E table
  *  250703AP    binary and BYTE shifts
@@ -312,7 +314,7 @@ unsigned IX_MASK;
 #define TRACK(x)    BYTE((x) / BYTESIZE)
 #define PLUS(x)     (SIGN(x) ? '-' : '+')
 #define ONOFF(x)    ((x) ? "ON ": "OFF")
-#define ASONOFF(x)  ((x) ? ON : OFF)
+#define TONOFF(x)  	((x) ? ON : OFF)
 
 
 
@@ -556,6 +558,21 @@ void aprint(Word w)
 void wprint(Word w)
 {
 	PrintLPT("%c%010o ", PLUS(w), MAG(w));
+}
+
+#define	FP_FMT	"%+12.5E"
+
+void dprint(double d)
+{
+	char buf[64], *ptr;
+	int epart;
+
+	sprintf(buf, FP_FMT, d);
+	ptr = strchr(buf, 'E');
+	if (ptr)
+		*ptr = 0;
+	sscanf(ptr + 1, "%d", &epart);
+	PrintLPT("%s%+02d ", buf, epart);
 }
 
 void xprin(Word w)
@@ -858,17 +875,17 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
  */
 #define FP_EPSILON  (000000200U)
 
-void fpFREXP(Word u, Word *e, Word *f)
+void fpFREXP(Word u, int *eq, Word *f)
 {
 	*f = SIGN(u) + field(u, FIELD(2,5));
-	*e = field(u, FIELD(1,1));
+	*eq = field(u, FIELD(1,1));
 }
 
 double FPToDouble(Word u)
 {
-    Word eq, f;
+    Word f;
     double d;
-    int i, sign, e;
+    int i, sign, e, eq;
 
     fpFREXP(u, &eq, &f);
     sign = SIGN(f);
@@ -895,11 +912,11 @@ double FPToDouble(Word u)
 void Approximate(double f, int *fracs)
 {
     int j;
-    double fpart, ipart;
+    double ipart;
     int inc;
 
     for (j = 0; j < BYTES; j++) {
-        fpart = modf(f, &ipart);
+        modf(f, &ipart);
         fracs[j] = (int)ipart;
         f = FP_B * (f - ipart);
     }
@@ -1050,8 +1067,9 @@ void smDADD(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
 
 Word fpADD(Word u, Word v)
 {
-	Word ue, uf, ve, vf;
-	Word we, wf, hi_wf;
+	Word uf, vf;
+	int ue, ve, we;
+	Word wf, hi_wf;
 	Word w;
 
     hi_wf = 0;
@@ -1085,8 +1103,9 @@ Word fpSUB(Word u, Word v)
 
 Word fpMUL(Word u, Word v)
 {
-	Word ue, uf, ve, vf;
-	Word we, wf, hi_wf;
+	Word uf, vf;
+	int ue, ve, we;
+	Word wf, hi_wf;
 	Word w;
 
     hi_wf = 0; wf = 0;
@@ -1103,8 +1122,9 @@ Word fpMUL(Word u, Word v)
 
 Word fpDIV(Word u, Word v)
 {
-	Word ue, uf, ve, vf;
-	Word we, hi_wf;
+	Word uf, vf;
+	int ue, ve, we;
+	Word hi_wf;
     Word hi_uf, lo_uf;
 	Word re, w;
 
@@ -1130,7 +1150,8 @@ Word fpFLOT(Word u)
 
 void fpCMP(Word u, Word v)
 {
-    Word ue, uf, ve, vf;
+    Word uf, vf;
+    int ue, ve;
 
     if (!MAG(u) && !MAG(v)) {
         CI = EQUAL;
@@ -1171,9 +1192,29 @@ void fpCMP(Word u, Word v)
 
 Word fpFIX(Word u)
 {
-    return UNDEF;
-}
+	Word uf, f11;
+	Word a, x;
+	int ue, e;
 
+	fpFREXP(u, &ue, &uf);
+	e = ue - FP_Q;
+
+	a = SIGN(uf); x = uf;
+	smSLAX(&x, NULL, x, 0, 1, 0);
+	if (e > 0)
+		smSLAX(&a, &x, a, x, e, 0);
+	else
+		x = 0;
+	f11 = field(x, FIELD(1,1));
+	if (FP_Q < f11)
+		smINC(&a);
+    else if (FP_Q == f11) {
+	    if ((MAG(a) + FP_Q) MOD 2 == 0) {
+			smDEC(&a);
+		}
+	}
+	return a;
+}
 
 /* ============== M A C H I N E  S T A T E ================== */
 
@@ -2476,8 +2517,8 @@ char EC[4 + 1];		/* error codes */
 int NE;				/* #error codes */
 char FREF;			/* future ref. */
 Toggle FF;          /* free fmt. */
-char *stok[] = { "ERR", "LOC", "NUM", "SYM"};
-enum {TOK_ERR, TOK_MTY, TOK_LOC, TOK_NUM, TOK_SYM} T; /* token type */
+char *stok[] = { "ERR", "LOC", "NUM", "FLT", "SYM"};
+enum {TOK_ERR, TOK_MTY, TOK_LOC, TOK_NUM, TOK_FLT, TOK_SYM} T; /* token type */
 char S[10 + 1];     /* parsed symbol */
 Word N;             /* parsed number */
 int  B;             /* binary op */
@@ -2508,6 +2549,8 @@ Toggle UNDSYM;      /* undefined symbol */
 #define EA_MAXLEN	'L'
 /* missing operand (binop) */
 #define EA_MISSOP	'M'
+/* invalid number */
+#define EA_INVNUM	'N'
 /* unknown opcode */
 #define EA_UNKOPC	'O'
 /* location out of range */
@@ -2636,7 +2679,8 @@ int AsmError(char e)
 
 int GetSym(void)
 {
-    int i, n, d, isnum;
+    int i, n, d, isnum, isfloat, savn;
+    char *SBEG, *SEND;
 
     if (CH && '*' == CH) {
         NEXT();
@@ -2644,15 +2688,42 @@ int GetSym(void)
         return 0;
     }
     n = 0;
-    isnum = 1;
+    isnum = 1; isfloat = 0; SBEG = SEND = NULL;
     MemSet(S, ' ', sizeof(S)-1);
     while (CH && ((d = IsDigit(CH)) || IsAlpha(CH))) {
+	    SBEG = PLN-1;
         isnum = isnum && d;
         if (n < 10)
             S[n] = CH;
         n++; NEXT();
     }
-    if (n > 9)
+    if (isnum && '.' == CH) {
+	    isfloat = 1; isnum = 0; NEXT();
+	    while (CH && (d = IsDigit(CH))) {
+	        if (n < 10)
+	            S[n] = CH;
+	        n++; NEXT();
+	    }
+	    if ('E' == CH) {
+            NEXT();
+            if ('+' == CH || '-' == CH) {
+                NEXT();
+            } else if (IsDigit(CH)) {
+                ;
+            } else
+                AsmError(EA_INVNUM);
+            savn = n;
+		    while (CH && (d = IsDigit(CH))) {
+		        if (n < 10)
+		            S[n] = CH;
+		        n++; NEXT();
+		    }
+		    if (n == savn)
+                AsmError(EA_INVNUM);
+	    }
+	    SEND = PLN-1;
+    }
+    if (!isfloat && n > 9)
         AsmError(EA_MAXLEN);
     if (0 == n)
         T = TOK_MTY;
@@ -2661,6 +2732,15 @@ int GetSym(void)
         for (i = 0; i < n; i++)
             N = 10 * N + S[i] - '0';
         T = TOK_NUM;
+    } else if (isfloat) {
+	    char buf[MAX_LINE+1];
+	    double D;
+
+	    strncpy(buf, SBEG, SEND - SBEG + 1);
+	    if (1 != sscanf(buf, "%lg", &D))
+		    AsmError(EA_INVNUM);
+	    N = DoubleToFP(D);
+	    T = TOK_FLT;
     } else
         T = TOK_SYM;
     return 0;
@@ -2857,6 +2937,7 @@ Word AtomicExpr(void)
         ret = P;
         break;
     case TOK_NUM:
+    case TOK_FLT:
         ret = N;
         break;
     case TOK_SYM:
@@ -2864,7 +2945,7 @@ Word AtomicExpr(void)
         if (IsLocalSym(S)) {
             if ('H' == S[1])
                 AsmError(EA_INVSYM);
-            localB = ASONOFF('B' == S[1]);
+            localB = TONOFF('B' == S[1]);
         }
         SX = found = FindSym(S);
         if (found) {
@@ -2897,9 +2978,24 @@ int IsBinOp(void)
     return 0;
 }
 
+void TraceAV(Toggle isfloat, const char *msg, char var, Word w)
+{
+	char buf[32];
+
+	if (!TRACEA)
+		return;
+
+	if (isfloat)
+		sprintf(buf, FP_FMT, FPToDouble(w));
+	else
+		sprintf(buf, "%c%010o", PLUS(w), MAG(w));
+	Print("    %s%c=%s", msg ? msg : "", var, buf);
+}
+
 Word Expr(void)
 {
     Word v = 0, w = 0;
+    Toggle FLOATARG;
 
     TraceA("    EXPR '%c%s'", CH, PLN);
     if ('+' == CH || '-' == CH) {
@@ -2913,30 +3009,46 @@ Word Expr(void)
         /* future reference? */
         v = AtomicExpr();
     }
-	TraceA("    V=%c%010o", PLUS(v), MAG(v));
+    FLOATARG = TONOFF(TOK_FLT == T);
+    TraceAV(FLOATARG, NULL, 'V', v);
     while (IsBinOp()) {
 		TraceA("    B=%c", B);
 		if (UNDSYM) AsmError(EA_UNDSYM);
         w = AtomicExpr();
         if (TOK_MTY == T)
             AsmError(EA_MISSOP);
-		TraceA("    W=%c%010o", PLUS(w), MAG(w));
+		TraceAV(TOK_FLT == T, NULL, 'W', w);
+		if (FLOATARG && TOK_FLT != T) {
+			Warning("FLOAT CONVERSION");
+			w = DoubleToFP(w2i(w));
+		}
         OT = OFF;
-        switch (B) {
-        case '+': v = smADD(v, w); break;
-        case '-': v = smSUB(v, w); break;
-        case '*': smMUL(&w, &v, w, v); break;
-        case '/': smDIV(&v, NULL, 0, v, MAG(w) ? w : 1); break;
-        case 'D': smDIV(&v, NULL, v, 0, MAG(w) ? w : 1); break; /*//*/
-        case ':': v = i2w(8 * w2i(v) + w2i(w)); break;
-        default:
-            break;
+        if (FLOATARG) {
+	        switch (B) {
+	        case '+': v = fpADD(v, w); break;
+	        case '-': v = fpSUB(v, w); break;
+	        case '*': v = fpMUL(v, w); break;
+	        case '/': v = fpDIV(v, w); break;
+	        default: AsmError(EA_INVCHR);
+	        }
+        } else {
+	        switch (B) {
+	        case '+': v = smADD(v, w); break;
+	        case '-': v = smSUB(v, w); break;
+	        case '*': smMUL(&w, &v, w, v); break;
+	        case '/': smDIV(&v, NULL, 0, v, MAG(w) ? w : 1);
+	        case 'D': /*//*/
+                smDIV(&v, NULL, v, 0, MAG(w) ? w : 1);
+                break;
+	        case ':': v = i2w(8 * w2i(v) + w2i(w)); break;
+	        default: break;
+	        }
         }
-		TraceA("    AFTER V=%c%010o", PLUS(v), MAG(v));
+        TraceAV(FLOATARG, "AFTER", 'V', v);
         if (OT)
         	AsmError(EA_OVRFLW);
     }
-	TraceA("    EXPR V=%c%010o", PLUS(v), MAG(v));
+    TraceAV(FLOATARG, "EXPR", 'V', v);
     return v;
 }
 
@@ -3390,6 +3502,7 @@ void Status(Word P)
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
     double d;
+    Toggle FLOATOP;
 	
 	INST = MemRead(P); w = MAG(INST);
 	C = BYTE(w); w /= BYTESIZE;
@@ -3406,11 +3519,12 @@ void Status(Word P)
 N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
 	if (0 == (TraceCount++ % 31))
-		Print("    LOC FREQ   INSTRUCTION  OP    OPERAND      REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
+		Print("    LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
 	Print("%c%c%05o %04d ", ssta[STATE], PLUS(P), MAG(P), freq[P] % 9999);
     aprint4(A); bprint(I); bprint(F); bprint(C);
 	Print("%s ", mnemo);
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
+    FLOATOP=OFF;
 
     if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
         || RANGE(C,8,23)
@@ -3418,22 +3532,24 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         || RANGE(C,57,63))
     {
         GetV(M, F, &OP);
-        wprint(OP); space();
-    } if ((RANGE(C,1,4) && 6 == F)  /*FADD/FSUB/FMUL/FDIV*/
+        wprint(OP);
+    } else if ((RANGE(C,1,4) && 6 == F)  /*FADD/FSUB/FMUL/FDIV*/
         || (56 == C && 6 == F))     /*FCMP*/
     {
         d = FPToDouble(MemRead(M));
-        /* +1234567890  */
-        /* +1.12345e+12 */
-        fprintf(LPT, "%12.5e ", d);
+        dprint(d);
+        FLOATOP=ON;
     } else if (5 == C && 7 == F) {  /*FIX*/
         d = FPToDouble(rA);
-        fprintf(LPT, "%12.5e ", d);
+        dprint(d);
+        FLOATOP=ON;
     } else {
 	    xprint(OP);
-        Print("      ");
+        Print("     ");
     }
-	wprint(rA); wprint(rX);
+    if (FLOATOP) dprint(d);
+	else wprint(rA);
+	wprint(rX);
 	for (i = 1; i <= 6; i++)
 		xprint(reg[i]);
 
@@ -3588,7 +3704,7 @@ int Step(void)
 	case 1: /*ADD*/
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) {
+	    if (6 == F) { /*FADD*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpADD(rA, MemRead(M));
@@ -3606,7 +3722,7 @@ int Step(void)
 	case 2: /*SUB*/
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) {
+	    if (6 == F) { /*FSUB*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpSUB(rA, MemRead(M));
@@ -3622,7 +3738,7 @@ int Step(void)
 	case 3: /*MUL*/
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) {
+	    if (6 == F) { /*FMUL*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpMUL(rA, MemRead(M));
@@ -3639,7 +3755,7 @@ int Step(void)
 	case 4: /*DIV*/
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) {
+	    if (6 == F) { /*FDIV*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpADD(rA, MemRead(M));
@@ -3923,10 +4039,10 @@ int Step(void)
 	case 56: case 57: case 58: case 59: case 60: case 61: case 62: case 63: /*CMPr*/
 	    if (CheckMemRead(M))
     	    return 1;
-	    if (6 == F) {
+	    if (6 == F) { /*FCMP*/
     	    if (CheckFloatOption())
     	        return 1;
-            fpCMP(MemRead(M), rA);
+            fpCMP(rA, MemRead(M));
     	    Tyme += 2; TIMER += 2;
     	    return FieldError(F);
 	    } else {
