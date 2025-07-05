@@ -1,0 +1,205 @@
+*
+* ADDITION, SUBTRACTION, AND NORMALIZATION
+*
+BYTE       EQU  1(4:4)            BYTE SIZE B                           00000000
+EXP        EQU  1:1               DEFINITION OF EXPONENT FIELD          00010000
+FSUB       STA  TEMP              FLOATING POINT SUBTRACTION SUBROUTINE:00020000
+           LDAN TEMP              CHANGE SIGN OF OPERAND.               00030000
+FADD       STJ  EXITF             FLOATING POINT ADDITION SUBROUTINE:   00040000
+           JOV  OFLO              ENSURE THAT OVERFLOW IS OFF.          00050000
+           STA  TEMP              TEMP := V.                            00060000
+           LDX  ACC               RX := U.                              00070000
+           CMPA ACC(EXP)          STEPS A1, A2, A3 ARE COMBINED HERE:   00080000
+           JGE  1F                JUMP IF EV >= EU.                     00090000
+           STX  FU(0:4)           FU := +/-FFFF0.                       00100000
+           LD2  ACC(EXP)          RI2 := EW.                            00110000
+           STA  FV(0:4)                                                 00120000
+           LD1N TEMP(EXP)         RI1 := -EV.                           00130000
+           JMP  4F                                                      00140000
+1H         STA  FU(0:4)           FU := +/-FFFF0 (U,V INTERCHANGED).    00150000
+           LD2  TEMP(EXP)         RI2 := EW.                            00160000
+           STX  FV(0:4)                                                 00170000
+           LD1N ACC(EXP)          RI1 := EV.                            00180000
+4H         INC1 0,2               RI1 := EU - EV. (STEP A4 UNNECESSARY.)00190000
+5H         LDA  FV                A5. SCALE RIGHT.                      00200000
+           ENTX 0                 CLEAR RX.                             00210000
+           SRAX 0,1               SHIFT RIGHT EU - EV PLACES.           00220000
+6H         ADD  FU                A6. ADD.                              00230000
+           JOV  N4                A7. NORMALIZE. JUMP IF FRACT.OVERFLOW 00240000
+           JXZ  NORM              EASY CASE?                            00250000
+           LD1  FV(0:1)           CHECK FOR OPPOSITE SIGNS.             00260000
+           JAP  1F                                                      00270000
+           J1N  N2                IF NOT, NORMALIZE.                    00280000
+           JMP  2F                                                      00290000
+1H         J1P  N2                                                      00300000
+2H         SRC  5                 |RX| :=: |RA|.                        00310000
+           DECX 1                 (RX IS POSITIVE).                     00320000
+           STA  TEMP              (THE OPERANDS HAD OPPOSITE SIGNS;     00330000
+           STA  HALF(0:0)           WE MUST ADJUST THE REGISTERS        00340000
+           LDAN TEMP                BEFORE ROUNDING AND NORMALIZATION.) 00350000
+           ADD  HALF                                                    00360000
+           ADD  HALF              COMPLEMENT THE LEAST SIGNIF.PORTION   00370000
+           SRC  5                 JUMP INTO NORMALIZATION ROUTINE.      00380000
+           JMP  N2                                                      00390000
+HALF       CON  1//2              ONE HALF THE WORD SIZE (SIGN VARIES)  00400000
+FU         CON  0                 FRACTION PART FU                      00410000
+FV         CON  0                 FRACTION PART FV                      00420000
+NORM       JAZ  ZRO               N1. TEST F.                           00430000
+N2         CMPA =0=(1:1)          N2. IS F NORMALIZED?                  00440000
+           JNE  N5                TO N5 IF LEADING BYTE NONZERO.        00450000
+N3         SLAX 1                 N3. SCALE LEFT.                       00460000
+           DEC2 1                 DECREASE E BY 1.                      00470000
+           JMP  N2                RETURN TO N2.                         00480000
+N4         ENTX 1                 N4. SCALE RIGHT.                      00490000
+           SRC  1                 SHIFT RIGHT, INSERT "1" W/ PROPER SIGN00500000
+           INC2 1                 INCREASE E BY 1.                      00510000
+N5         CMPA =BYTE/2=(5:5)     N5. ROUND.                            00520000
+           JL   N6                IS |TAIL| < 0.5B?                     00530000
+           JG   5F                                                      00540000
+           JXNZ 5F                IS |TAIL| > 0.5B?                     00550000
+           STA  TEMP              |TAIL| = 0.5B; ROUND TO ODD.          00560000
+           LDX  TEMP(4:4)                                               00570000
+           JXO  N6                TO N6 IF RX IS ODD.                   00580000
+5H         STA  *+1(0:0)          STORE SIGN OF RA.                     00590000
+           INCA BYTE              ADD B^-4 TO |F|. (SIGN VARIES)        00600000
+           JOV  N4                CHECK FOR ROUNDING OVERFLOW.          00610000
+N6         J2N  EXPUN             N6. CHECK E. UNDERFLOW IF E < 0.      00620000
+N7         ENTX 0,2               N7. PACK. RX := E.                    00630000
+           SRC  1                                                       00640000
+ZRO        DEC2 BYTE              RI2 := E - B.                         00650000
+8H         STA  ACC                                                     00660000
+EXITF      J2N  *                 EXIT, UNLESS E >= B.                  00670000
+EXPOV      HLT  2                 EXPONENT OVERFLOW DETECTED            00680000
+EXPUN      HLT  1                 EXPONENT UNDERFLOW DETECTED           00690000
+ACC        CON  0                 FLOATING POINT ACCUMULATOR            00700000
+*                                                                       00710000
+* PROGRAM M (FLOATING POINT MULTIPLICATION AND DIVISION).               00720000
+*                                                                       00730000
+Q          EQU  BYTE/2            Q IS HALF THE BYTE SIZE               00740000
+FMUL       STJ  EXITF             FLOATING POINT MULT. SUBROUTINE:      00750000
+           JOV  OFLO              ENSURE THAT OVERFLOW IS OFF.          00760000
+           STA  TEMP              TEMP := V.                            00770000
+           LDX  ACC               RX := U.                              00780000
+           STX  FU(0:4)           FU := +/-FFFF0.                       00790000
+           LD1  TEMP(EXP)                                               00800000
+           LD2  ACC(EXP)                                                00810000
+           INC2 -Q,1              RI2 := EU + EV - Q.                   00820000
+           SLA  1                                                       00830000
+           MUL  FU                MULTIPLY FU TIMES FV.                 00840000
+           JMP  NORM              NORMALIZE, ROUND, AND EXIT.           00850000
+FDIV       STJ  EXITF             FLOATING POINT DIVISION SUBROUTINE:   00860000
+           JOV  OFLO              ENSURE THAT OVERFLOW IS OFF.          00870000
+           STA  TEMP              TEMP := V.                            00880000
+           STA  FV(0:4)           FV := +/-FFFF0.                       00890000
+           LD1  TEMP(EXP)                                               00900000
+           LD2  ACC(EXP)                                                00910000
+           DEC2 -Q,1              RI2 := EU - EV + Q.                   00920000
+           ENTX 0                                                       00930000
+           LDA  ACC                                                     00940000
+           SLA  1                 RA := FU.                             00950000
+           CMPA FV(1:5)                                                 00960000
+           JL   *+3               JUMP IF |FU| < |FV|.                  00970000
+           SRA  1                 OTHERWISE, SCALE FU RIGHT             00980000
+           INC2 1                     AND INCREASE RI2 BY 1.            00990000
+           DIV  FV                DIVIDE.                               01000000
+           JNOV NORM              NORMALIZE, ROUND, AND EXIT.           01010000
+DVZRO      HLT  3                 UNNORMALIZED OR ZERO DIVISOR          01020000
+*                                                                       01030000
+FLOT       STJ  EXITF             ASSUME THAT RA = U, AN INTEGER.       01040000
+           JOV  OFLO              ENSURE THAT OVERFLOW IS OFF.          01050000
+           ENT2 Q+5               SET RAW EXPONENT.
+           ENTX 0
+           JMP  NORM              NORMALIZE, ROUND, AND EXIT.
+*
+FPFLOT     STJ  9F                IF NO FLOT PRESENT IN FP ATTACHMENT
+           SLA  1
+           ENTX Q+4
+           SRC  1
+           FADD =0=
+9H         JMP  *
+*
+FIX        STJ  9F                FLOAT-TO-FIX SUBROUTINE
+           STA  TEMP
+           LD1  TEMP(EXP)         RI1 := E.
+           SLA  1                 RA := +/-FFFF0.
+           JAZ  9F                IS INPUT ZERO?
+           DEC1 1
+           CMPA =0=(1:1)          IF LEADING BYTE IS ZERO,
+           JE   *-4                  SHIFT LEFT AGAIN.
+           ENN1 -Q-4,1
+           J1N  FIXOVFLO          IS MAGNITUDE TOO LARGE?
+           ENTX 0
+           SRAX 0,1
+           CMPX =1//2=
+           JL   9F
+           JG   *+2
+           JAO  9F                THE AMBIGUOUS CASE BECOMES ODD, SINCE
+*                                 B/2 IS EVEN.
+           STA  *+1(0:0)          ROUND, IF NECESSARY.
+           INCA 1                 ADD +/-1 (OVERFLOW IS IMPOSSIBLE).
+9H         JMP  *
+*
+FP         STJ  EXITF             FRACTIONAL PART SUBROUTINE:
+           JOV  OFLO              ENSURE THAT OVERFLOW IS OFF.
+           STA  TEMP              TEMP := U.
+           ENTX 0
+           SLA  1                 RA := FU.
+           LD2  TEMP(EXP)         RI2 := EU.
+           DEC2 Q
+           J2NP *+3
+           SLA  0,2               REMOVE INTEGER PART OF U.
+           ENT2 0
+           JANN 1F
+           ENN2 0,2               FRACTION IS NEGATIVE: FIND
+           SRAX 0,2                 ITS COMPLEMENT.
+           ENT2 0
+           JXNZ *+3
+           JAZ  *+2
+           INCA 1
+           ADD  WM1               ADD WORD SIZE MINUS ONE.
+1H         INC2 Q                 PREPARE TO NORMALIZE THE ANSWER.
+           JMP  NORM              NORMALIZE, ROUND, AND EXIT.
+8H         EQU  1(1:1)
+WM1        CON  8B-1,8B-1(1:4)    WORD SIZE MINUS ONE.
+*
+FCMP       STJ  9F                FLOATING POINT COMPARISON SUBROUTINE:
+           JOV  OFLO              ENSURE THAT OVERFLOW IS OFF.
+           STA  TEMP
+           LDAN TEMP              V:=-V.
+*          (COPY HERE LINES 07-20 OF PROGRAM 4.2.1A.)
+           LDX  ACC               RX := U.                              00070000
+           CMPA ACC(EXP)          STEPS A1, A2, A3 ARE COMBINED HERE:   00080000
+           JGE  1F                JUMP IF EV >= EU.                     00090000
+           STX  FU(0:4)           FU := +/-FFFF0.                       00100000
+           LD2  ACC(EXP)          RI2 := EW.                            00110000
+           STA  FV(0:4)                                                 00120000
+           LD1N TEMP(EXP)         RI1 := -EV.                           00130000
+           JMP  4F                                                      00140000
+1H         STA  FU(0:4)           FU := +/-FFFF0 (U,V INTERCHANGED).    00150000
+           LD2  TEMP(EXP)         RI2 := EW.                            00160000
+           STX  FV(0:4)                                                 00170000
+           LD1N ACC(EXP)          RI1 := EV.                            00180000
+4H         INC1 0,2               RI1 := EU - EV. (STEP A4 UNNECESSARY.)00190000
+5H         LDA  FV                A5. SCALE RIGHT.                      00200000
+*          (END OF COPY)
+           LDX  FV(0:0)           SET RX TO ZERO WITH THE SIGN OF FV.
+           DEC1 5
+           J1N  *+2
+           ENT1 0                 REPLACE LARGE DIFFERENCES IN EXP.
+           SRAX 5,1                   BY A SMALLER ONE.
+           ADD  FU                RA:=DIFFERENCE OF OPERANDS.
+           JOV  7F                FRACTION OVERFLOW: NOT ~.
+           CMPA EPSILON(1:5)
+           JG   8F                JUMP IF NOT ~.
+           JL   6F                JUMP IF ~.
+           JXZ  9F                JUMP IF ~.
+           JXP  1F                IF |RA|=EPSILON, CHECK SIGN OF RA*RX. 00200000
+           JAP  9F                JUMP IF ~. (RA # 0)
+           JMP  8F
+7H         ENTX 1
+           SRC  1                 MAKE RA NONZERO WITH SAME SIGN.
+           JMP  8F
+1H         JAP  8F                JUMP IF NOT ~. (RA # 0)
+6H         ENTA 0
+8H         CMPA =0=               SET COMPARISON INDICATOR.
+9H         JMP  *                 EXIT FROM SUBROUTINE.
