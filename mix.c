@@ -3389,6 +3389,7 @@ void Status(Word P)
 	static char *sot = " X", *sci = "<=>", *ssta = "HSWN ";
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
+    double d;
 	
 	INST = MemRead(P); w = MAG(INST);
 	C = BYTE(w); w /= BYTESIZE;
@@ -3405,7 +3406,7 @@ void Status(Word P)
 N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +1234 +1234 +1234 +1234 +1234 ? ? 1234567
 	*/
 	if (0 == (TraceCount++ % 31))
-		Print("    LOC FREQ   INSTRUCTION  OP    OPERAND     REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
+		Print("    LOC FREQ   INSTRUCTION  OP    OPERAND      REGISTER A  REGISTER X   RI1    RI2    RI3    RI4    RI5    RI6    RJ  OV CI   TYME\n");
 	Print("%c%c%05o %04d ", ssta[STATE], PLUS(P), MAG(P), freq[P] % 9999);
     aprint4(A); bprint(I); bprint(F); bprint(C);
 	Print("%s ", mnemo);
@@ -3417,10 +3418,20 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         || RANGE(C,57,63))
     {
         GetV(M, F, &OP);
-        wprint(OP);
+        wprint(OP); space();
+    } if ((RANGE(C,1,4) && 6 == F)  /*FADD/FSUB/FMUL/FDIV*/
+        || (56 == C && 6 == F))     /*FCMP*/
+    {
+        d = FPToDouble(MemRead(M));
+        /* +1234567890  */
+        /* +1.12345e+12 */
+        fprintf(LPT, "%12.5e ", d);
+    } else if (5 == C && 7 == F) {  /*FIX*/
+        d = FPToDouble(rA);
+        fprintf(LPT, "%12.5e ", d);
     } else {
 	    xprint(OP);
-        Print("     ");
+        Print("      ");
     }
 	wprint(rA); wprint(rX);
 	for (i = 1; i <= 6; i++)
