@@ -580,7 +580,13 @@ void dprint(double d)
 	if (ptr)
 		*ptr = 0;
 	sscanf(ptr + 1, "%d", &epart);
-	PrintLPT("%s%+02d ", buf, epart);
+	ptr[1] = epart < 0 ? '-' : '+';
+	epart = ABS(epart);
+	ptr[2] = epart < 10 ? '0' : '0' + (epart / 10);
+	ptr[3] = '0' + (epart % 10);
+	ptr[4] = 0;
+	PrintLPT("%s%s", buf, ptr+1);
+	space();
 }
 
 void xprin(Word w)
@@ -1035,8 +1041,7 @@ N5:	f11 = field(lo_f, FIELD(1,1));
 	} else if (e > FP_Q - 1) {
 		OT = ON; CI = LESS;
 	}
-N7:	e += FP_Q;
-	w = hi_f + (e << (4*6));
+N7:	w = hi_f + (BYTE(e) << (4*6));
 	return w;
 }
 
@@ -1140,8 +1145,16 @@ Word fpMUL(Word u, Word v)
 	fpFREXP(u, &ue, &uf);
 	fpFREXP(v, &ve, &vf);
 
+	Print("U=(%02d,%c%010o)\n",ue,PLUS(uf),MAG(uf));
+	Print("V=(%02d,%c%010o)\n",ve,PLUS(vf),MAG(vf));
+
     we = ue + ve - FP_Q;
+    smSLAX(&uf, NULL, uf, 0, 1, SHIFT);
+    smSLAX(&vf, NULL, vf, 0, 1, SHIFT);
     smMUL(&hi_wf, &wf, uf, vf);
+
+    // 04 46, 31 46 00 00 00
+    Print("W=(%02d,%c%010o,%c%010o)\n",we,PLUS(hi_wf),MAG(hi_wf),PLUS(wf),MAG(wf));
 
     w = fpNORM(we, hi_wf, wf);
     return w;
@@ -3526,13 +3539,13 @@ void decode(Word C, Word F)
 		*s = regnames[C MOD 8];
 }
 
+Toggle OLDFLOATOP, FLOATOP;
 void Status(Word P)
 {
 	static char *sot = " X", *sci = "<=>", *ssta = "HSWN ";
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
     double d;
-    Toggle FLOATOP;
 	
 	INST = MemRead(P); w = MAG(INST);
 	C = BYTE(w); w /= BYTESIZE;
@@ -3554,7 +3567,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
     aprint4(A); bprint(I); bprint(F); bprint(C);
 	Print("%s ", mnemo);
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
-    FLOATOP=OFF;
+    OLDFLOATOP = FLOATOP; FLOATOP=OFF;
 
     if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
         || RANGE(C,8,23)
@@ -3577,7 +3590,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 	    xprint(OP);
         Print("     ");
     }
-    if (FLOATOP) dprint(d);
+    if (OLDFLOATOP || FLOATOP) dprint(FPToDouble(rA));
 	else wprint(rA);
 	wprint(rX);
 	for (i = 1; i <= 6; i++)
@@ -3739,7 +3752,6 @@ int Step(void)
     	        return 1;
             rA = fpADD(rA, MemRead(M));
     	    Tyme += 2; TIMER += 2;
-    	    return FieldError(F);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -3757,7 +3769,6 @@ int Step(void)
     	        return 1;
             rA = fpSUB(rA, MemRead(M));
     	    Tyme += 2; TIMER += 2;
-    	    return FieldError(F);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -3773,7 +3784,6 @@ int Step(void)
     	        return 1;
             rA = fpMUL(rA, MemRead(M));
     	    Tyme += 7; TIMER += 7;
-    	    return FieldError(F);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -3790,7 +3800,6 @@ int Step(void)
     	        return 1;
             rA = fpADD(rA, MemRead(M));
     	    Tyme += 9; TIMER += 9;
-    	    return FieldError(F);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -3833,13 +3842,11 @@ int Step(void)
                     return 1;
                 rA = fpFLOT(rA);
                 Tyme += 2; TIMER += 2;
-                return FieldError(F);
             case  7: /*FIX*/
                 if (CheckFloatOption())
                     return 1;
                 rA = fpFIX(rA);
                 Tyme += 2; TIMER += 2;
-                return FieldError(F);
             case  8: /*NEG*/
                 if (CheckBinaryOption())
                     return 1;
@@ -3855,7 +3862,6 @@ int Step(void)
 	                RestoreSTATE();
                 }
                 Tyme++;
-                return FieldError(F);
             case 10: /*XCH*/
                 if (CheckBinaryOption())
                     return 1;
@@ -4074,7 +4080,6 @@ int Step(void)
     	        return 1;
             fpCMP(rA, MemRead(M));
     	    Tyme += 2; TIMER += 2;
-    	    return FieldError(F);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -4314,6 +4319,7 @@ void Init(void)
 	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
 	STATE = S_HALT; Halt();
+	FLOATOP = OLDFLOATOP = OFF;
 
     InitMemory();
     atexit(Finish);
