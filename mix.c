@@ -47,6 +47,7 @@
  *              added DoubleToFP/FPToDouble
  *				float AtomicExpr
  *				fpFIX skeleton
+ *              fpCMP, fpADD fixes
  *  250704AP    fpCMP skeleton, FP_EPSILON
  *              10^E table
  *  250703AP    binary and BYTE shifts
@@ -202,6 +203,7 @@ char *strtoupper(char *s)
 typedef unsigned int Word;
 typedef unsigned char Byte;
 typedef enum {OFF, ON} Toggle;
+typedef enum {LESS, EQUAL, GREATER} Comparator;
 typedef enum {S_HALT, S_STOP, S_WAIT, S_NORMAL, S_CONTROL} MachineState;
 #define MIX_BINARY       1
 #define MIX_INTERRUPT    2
@@ -227,7 +229,7 @@ int MAX_MEM;
 
 Word reg[10], *mem, *ctlmem, P;
 Toggle OT;
-enum {LESS, EQUAL, GREATER} CI;
+Comparator CI;
 Toggle TRANS, LNKLD, DUMP;
 #define CARD_MIX    0
 #define CARD_MIX360 1
@@ -316,6 +318,12 @@ unsigned IX_MASK;
 #define ONOFF(x)    ((x) ? "ON ": "OFF")
 #define TONOFF(x)  	((x) ? ON : OFF)
 
+#define ROTATE      1
+#define SHIFT       0
+
+#define IS_NEGATIVE(w)  (MAG(w) && SIGN(w))
+#define IS_ZERO(w)      (!MAG(w))
+#define IS_POSITIVE(w)  (MAG(w) && !SIGN(w))
 
 
 /* ===================== L O G G I N G ====================== */
@@ -678,6 +686,26 @@ Word smSUB(Word x, Word y)
 	return smADD(x, smNEG(y));
 }
 
+Comparator smCMP(Word x, Word y)
+{
+    Comparator ret;
+
+    if (SIGN(x) == SIGN(y)) {
+        if (MAG(x) > MAG(y)) {
+            ret = SIGN(x) ? LESS : GREATER;
+        } else if (MAG(x) < MAG(y)) {
+            ret = SIGN(x) ? GREATER : LESS;
+        } else {
+            ret = EQUAL;
+        }
+    } else if (SIGN(x)) {
+        ret = LESS;
+    } else {
+        ret = GREATER;
+    }
+    return ret;
+}
+
 void smDEC(Word *pw)
 {
     *pw = smSUB(*pw, 1);
@@ -839,13 +867,13 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
         return;
 	}
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
-    smSLB(&ma, &mx, ma, mx, 1, 0);
+    smSLB(&ma, &mx, ma, mx, 1, SHIFT);
 	for (i = 0; i < 30; i++) {
 		d = 0;
 		if (ma >= mv) {
 			d = 1; ma -= mv;
 		}
-		smSLB(&ma, &mx, ma, mx, 1, 0); mx += d;
+		smSLB(&ma, &mx, ma, mx, 1, SHIFT); mx += d;
 	}
     ma = ma DIV 2;
     /* rX: ma - rem, rA: mx - quo */
@@ -986,10 +1014,10 @@ N2:
 	if (MAG(hi_f) >= FP_REPRB)
 		goto N5;
 /*N3*/
-	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, 0);
+	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT);
 	e--;
 	goto N2;
-N4: smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, 0);
+N4: smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT);
 	e++;
 N5:	f11 = field(lo_f, FIELD(1,1));
     if (FP_Q < f11) {
@@ -1075,7 +1103,7 @@ Word fpADD(Word u, Word v)
     hi_wf = 0;
 
 /*A1.A2*/
-	if (MAG(v) < MAG(u))
+	if (MAG(u) < MAG(v))
 		SWAP(v, u);
 		
 	/* u >= v */
@@ -1088,8 +1116,7 @@ Word fpADD(Word u, Word v)
 		wf = uf; goto A7;
 	}
 /*A5*/
-	smSRAX(&hi_wf, &wf, vf, 0, ue - ve, 0);
-	hi_wf += SIGN(vf);
+	smSRAX(&hi_wf, &wf, vf, SIGN(vf), ue - ve, SHIFT);
 	smDADD(&hi_wf, &wf, hi_wf, wf, uf, 0);
 A7:
 	w = fpNORM(we, hi_wf, wf);
@@ -1136,7 +1163,7 @@ Word fpDIV(Word u, Word v)
 
     we = ue - ve + FP_Q + 1;
     /* b^-1 * uf / vf  */
-    smSRAX(&hi_uf, &lo_uf, uf, 0, 1, 0);
+    smSRAX(&hi_uf, &lo_uf, uf, 0, 1, SHIFT);
     smDIV(&hi_wf, &re, hi_uf, lo_uf, vf);
 
     w = fpNORM(we, hi_wf, 0);
@@ -1150,44 +1177,47 @@ Word fpFLOT(Word u)
 
 void fpCMP(Word u, Word v)
 {
-    Word uf, vf;
-    int ue, ve;
+    Word uf, vf, vf_a, vf_x;
+    int ue, ve, ediff;
 
-    if (!MAG(u) && !MAG(v)) {
-        CI = EQUAL;
-        return;
-    }
+    v = smNEG(v);
 
-    if (SIGN(u) == SIGN(v)) {
-	    fpFREXP(u, &ue, &uf);
-	    fpFREXP(v, &ve, &vf);
-        if (ue < ve) {
-            CI = SIGN(u) ? GREATER : LESS;
+    if (MAG(u) < MAG(v))
+        SWAP(u, v);
+
+	/* u >= v */
+	fpFREXP(u, &ue, &uf);
+	fpFREXP(v, &ve, &vf);
+
+    ediff = MIN(5, ue - ve);
+	smSRAX(&vf_a, &vf_x, vf, SIGN(vf), ediff, SHIFT);
+	vf_a = smADD(vf_a, uf);
+	if (CY) {
+        vf_x = 1;
+        smSRAX(&vf_a, &vf_x, vf_a, vf_x, 1, ROTATE);
+        goto CheckSign;
+	} else {
+	    CI = smCMP(vf_a, FP_EPSILON);
+	    if (GREATER == CI) {
+            goto CheckSign;
+	    } else if (LESS == CI) {
+            CI = EQUAL;
+	        return;
+        } else if (IS_ZERO(vf_x)) {
             return;
-        } else if (ue > ve) {
-            CI = SIGN(u) ? LESS : GREATER;
+        } else if (IS_POSITIVE(vf_x) && IS_POSITIVE(vf_a)) {
+            goto CheckSign;
+        } else if (IS_POSITIVE(vf_a)) {
             return;
         }
-        uf = MAG(uf);
-        vf = MAG(vf);
-        if (uf < vf) {
-            if (uf - vf <= FP_EPSILON) {
-                CI = EQUAL;
-                return;
-            }
-            CI = SIGN(u) ? GREATER : LESS;
-        } else {
-            if (vf - uf <= FP_EPSILON) {
-                CI = EQUAL;
-                return;
-            }
-            CI = SIGN(u) ? LESS : GREATER;
-        }
-    } else if (SIGN(u)) {
-        CI = LESS;
-    } else {
-        CI = GREATER;
-    }
+	}
+CheckSign:
+	if (SIGN(vf_a))
+	    CI = LESS;
+	else if (!MAG(vf_a))
+	    CI = EQUAL;
+	else
+	    CI = GREATER;
 }
 
 Word fpFIX(Word u)
@@ -1200,9 +1230,9 @@ Word fpFIX(Word u)
 	e = ue - FP_Q;
 
 	a = SIGN(uf); x = uf;
-	smSLAX(&x, NULL, x, 0, 1, 0);
+	smSLAX(&x, NULL, x, 0, 1, SHIFT);
 	if (e > 0)
-		smSLAX(&a, &x, a, x, e, 0);
+		smSLAX(&a, &x, a, x, e, SHIFT);
 	else
 		x = 0;
 	f11 = field(x, FIELD(1,1));
@@ -3850,32 +3880,32 @@ int Step(void)
 		} else {
 			switch(F){
 			case 0: /*SLA*/
-				smSLAX(&rA, NULL, rA, 0, M, 0);
+				smSLAX(&rA, NULL, rA, 0, M, SHIFT);
 				break;
 			case 1: /*SRA*/
-				smSRAX(&rA, NULL, rA, 0, M, 0);
+				smSRAX(&rA, NULL, rA, 0, M, SHIFT);
 				break;
 			case 2: /*SLAX*/
-				smSLAX(&rA, &rX, rA, rX, M, 0);
+				smSLAX(&rA, &rX, rA, rX, M, SHIFT);
 				break;
 			case 3: /*SRAX*/
-				smSRAX(&rA, &rX, rA, rX, M, 0);
+				smSRAX(&rA, &rX, rA, rX, M, SHIFT);
 				break;
 			case 4: /*SLC*/
-				smSLAX(&rA, &rX, rA, rX, M, 1);
+				smSLAX(&rA, &rX, rA, rX, M, ROTATE);
 				break;
 			case 5: /*SRC*/
-				smSRAX(&rA, &rX, rA, rX, M, 1);
+				smSRAX(&rA, &rX, rA, rX, M, ROTATE);
 				break;
             case 6: /*SLB*/
                 if (CheckBinaryOption())
                     return 1;
-				smSLB(&rA, &rX, rA, rX, M, 0);
+				smSLB(&rA, &rX, rA, rX, M, SHIFT);
                 break;
             case 7: /*SRB*/
                 if (CheckBinaryOption())
                     return 1;
-				smSRB(&rA, &rX, rA, rX, M, 0);
+				smSRB(&rA, &rX, rA, rX, M, SHIFT);
                 break;
 			default:
 				return FieldError(F);
@@ -3982,12 +4012,12 @@ int Step(void)
 	case 40: case 41: case 42: case 43: case 44: case 45: case 46: case 47:
 		w = reg[C - 40]; cond = 0;
 		switch (F) {
-		case 0: /*JrN*/ cond = MAG(w) && SIGN(w); break;
-		case 1: /*JrZ*/ cond = !MAG(w); break;
-		case 2: /*JrP*/ cond = MAG(w) && !SIGN(w); break;
-		case 3: /*JrNN*/cond = !MAG(w) || !SIGN(w); break;
-		case 4: /*JrNZ*/cond = MAG(w); break;
-		case 5: /*JrNP*/cond = !MAG(w) || SIGN(w); break;
+		case 0: /*JrN*/ cond = IS_NEGATIVE(w); break;
+		case 1: /*JrZ*/ cond = IS_ZERO(w); break;
+		case 2: /*JrP*/ cond = IS_POSITIVE(w); break;
+		case 3: /*JrNN*/cond = !IS_NEGATIVE(w); break;
+		case 4: /*JrNZ*/cond = !IS_ZERO(w); break;
+		case 5: /*JrNP*/cond = !IS_POSITIVE(w); break;
         case 6: /*JrE*/
             if (CheckBinaryOption())
                 return 1;
@@ -4049,10 +4079,7 @@ int Step(void)
             if (GetV(M, F, &w)) {
                 return 1;
             }
-    		w = smSUB(field(reg[C - 56], F), w);
-    		if (SIGN(w)) CI = LESS;
-    		else if (!MAG(w)) CI = EQUAL;
-    		else CI = GREATER;
+            CI = smCMP(field(reg[C - 56], F), w);
 		}
 		break;
 	}

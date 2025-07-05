@@ -192,8 +192,13 @@ void bExp(void)
 
 int main(int argc, char *argv[])
 {
+    int fracs[5], eq;
+    double d = 7.62942363516372e-06;
+
     tenExp();
     bExp();
+    eq = d2m(d, fracs);
+    prinfracs(eq, fracs);
     return 0;
 }
 
