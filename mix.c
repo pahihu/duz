@@ -255,6 +255,7 @@ int WaitRTI;
 Toggle CY;
 Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
+int NTESTS;
 
 #define rA	 reg[0]
 #define rI1	 reg[1]
@@ -1015,9 +1016,11 @@ Word DoubleToFP(double d)
     Approximate(d, fracs); e++;
     eq = e + FP_Q;
     if (eq >= BYTESIZE) {
-        Warning("EXPONENT OVERFLOW %d", eq);
+        // Warning("EXPONENT OVERFLOW %d", eq);
+        return SM_NAN;
     } else if (eq < 0) {
-        Warning("EXPONENT UNDERFLOW %d", eq);
+        // Warning("EXPONENT UNDERFLOW %d", eq);
+        return SM_NAN;
     }
     for (i = 0; i < 4; i++) {
         w = BYTESIZE * w + BYTE(fracs[i]);
@@ -1029,7 +1032,7 @@ Word DoubleToFP(double d)
 
 void PrintNorm(const char *msg, int e, Word hi, Word lo)
 {
-    if (ON)
+    if (NTESTS)
         return;
 
     Print("%s: (%d,%c%010o,%c%010o)\n",
@@ -1039,14 +1042,18 @@ void PrintNorm(const char *msg, int e, Word hi, Word lo)
 }
 
 /* assume |f| < b */
+Word LAST55;
 Word fpNORM(int e, Word hi_f, Word lo_f)
 {
 	Word f55, w;
 	int cnt;
 
 /*N1*/ PrintNorm("N1",e,hi_f,lo_f);
-	if (CY)
+	if (CY) {
+        CY = OFF;
+        lo_f = 1;
 		goto N4;
+	}
 	if (!MAG(hi_f)) {
 		e = 0; goto N7;
 	}
@@ -1058,9 +1065,9 @@ N2: PrintNorm("N2",e,hi_f,lo_f);
 	goto N2;
 	cnt = 0;
 N4: PrintNorm("N4",e,hi_f,lo_f);
-    smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e++;
+    smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, ROTATE); e++;
 N5: PrintNorm("N5",e,hi_f,lo_f);
-    f55 = BYTE(hi_f);
+    LAST55 = f55 = BYTE(hi_f);
     if (FP_Q < f55) {
 		hi_f = smADD(hi_f, SIGN(hi_f) + BYTESIZE);
 	} else if (FP_Q == f55 && IS_ZERO(lo_f)) {
@@ -1069,20 +1076,18 @@ N5: PrintNorm("N5",e,hi_f,lo_f);
     }
 	lo_f = 0;
 	if (CY) {
-        if (++cnt > 30) {
-            Error("NORM: N4-N5 LOOP");
-            return 0;
-        }
+        lo_f = 1;
         goto N4;
 	}
 /*N6*/PrintNorm("N6",e,hi_f,lo_f);
-	if (-FP_Q < e) {
+	if (e < 0) {
 		OT = ON; CI = GREATER;
-	} else if (e > FP_Q - 1) {
+	} else if (e > BYTESIZE-1) {
 		OT = ON; CI = LESS;
 	}
 N7: PrintNorm("N7",e,hi_f,lo_f);
     w = SIGN(hi_f) + (MAG(hi_f) DIV BYTESIZE) + (BYTE(e) << (4*6));
+    PrintNorm(" W",e,w,0);
 	return w;
 }
 
@@ -1166,9 +1171,10 @@ Word fpADD(Word u, Word v)
 	}
 /*A5*/
 	smSRAX(&hi_wf, &wf, vf, SIGN(vf), ue - ve, SHIFT);
-	PrintNorm(" V", 0, hi_wf, wf);
 	PrintNorm(" U", 0, uf, 0);
+	PrintNorm(" V", 0, hi_wf, wf);
 	smDADD(&hi_wf, &wf, hi_wf, wf, uf, 0);
+	PrintNorm(" W", CY, hi_wf, wf);
 A7:
 	w = fpNORM(we, hi_wf, wf);
 	return w;
@@ -4575,7 +4581,6 @@ void PunchTrans(void)
 }
 
 #define MIN_FP  (00001000000U)
-int NTESTS;
 
 Word myrand(void)
 {
@@ -4600,23 +4605,34 @@ void TestFP(void)
 
     LPT = stderr;
     srand(314159);
+    // NTESTS = 0;
     for (i = 0; i < NTESTS; i++) {
         u = myrand(); v = myrand();
         u = SIGN(u) + MAG(u);
         v = SIGN(v) + MAG(v);
         du = FPToDouble(u);
         dv = FPToDouble(v);
-        dw0 = du + dv;
+        dw0 = du * dv;
         w0 = DoubleToFP(dw0);
-        w1 = fpADD(u, v);
+        if (SM_NAN == w0) {
+            NTESTS++;
+            continue;
+        }
+        w1 = fpMUL(u, v);
         dw1 = FPToDouble(w1);
         sprintf(buf0, "%.5e", dw0);
         sprintf(buf1, "%.5e", dw1);
         if (!strcmp(buf0, buf1))
             continue;
+        if (LAST55 < FP_Q)
+            continue;
         wprint(u); wprint(v);
         fprintf(stderr,"%.5e + %.5e = %.5e %.5e %.5e\n", du, dv, dw0, dw1, fabs(dw0 - dw1));
     }
+    u = 06701231710U;
+    v = 06616323052U;
+    w0 = fpADD(u, v);
+    PrintLPT("W=%.5e\n", FPToDouble(w0));
     exit(0);
 }
 
