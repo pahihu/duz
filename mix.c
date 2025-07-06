@@ -49,6 +49,7 @@
  *              fixed smDADD
  *              added verbose assemble flag
  *              FADD fix + random FP testing
+ *              fixed memory-read access check
  *  250705AP    B^E table
  *              added DoubleToFP/FPToDouble
  *				float AtomicExpr
@@ -1456,6 +1457,14 @@ int CheckMasterOption(void)
 /* =================== M E M O R Y ========================== */
 
 
+int CheckAccess(Word a, char *msg)
+{
+    if (SIGN(a) && IsNormal()) {
+        return MIX_ErrorLoc("M=%c%010o ILLEGAL ACCESS %s", PLUS(a), MAG(a), msg);
+    }
+    return 0;
+}
+
 int CheckAddr(Word a, char *msg)
 {
 	int ret;
@@ -1474,17 +1483,9 @@ int CheckMemRead(Word a)
 {
     ASSERT(IsNormal() || IsControl());
 
-    if (CheckAddr(a, "MEMORY READ"))
+    if (CheckAccess(a, "MEMORY WRITE") || CheckAddr(a, "MEMORY READ"))
         return 1;
 
-    return 0;
-}
-
-int CheckAccess(Word a)
-{
-    if (SIGN(a) && IsNormal()) {
-        return MIX_ErrorLoc("M=%c%010o ILLEGAL ACCESS", PLUS(a), MAG(a));
-    }
     return 0;
 }
 
@@ -1492,7 +1493,7 @@ int CheckFetch(Word a)
 {
     ASSERT(IsNormal() || IsControl() || IsWaiting());
 
-    if (CheckAccess(a) || CheckAddr(a, "MEMORY FETCH"))
+    if (CheckAccess(a, "MEMORY FETCH") || CheckAddr(a, "MEMORY FETCH"))
         return 1;
 
     return 0;
@@ -1511,7 +1512,7 @@ int CheckMemWrite(Word a)
 {
     ASSERT(IsNormal() || IsControl());
 
-    if (CheckAccess(a) || CheckAddr(a, "MEMORY WRITE"))
+    if (CheckAccess(a, "MEMORY WRITE") || CheckAddr(a, "MEMORY WRITE"))
         return 1;
     return 0;
 }
@@ -2694,23 +2695,25 @@ int LinkLoad(Word adr, Word w)
 	Word nadr;
 	int ret = 0;
 	
-	if (!VERBOSE)
-	    return 0;
-    Info("LINKLOAD");
+    if (VERBOSE) {
+        Info("LINKLOAD");
+    }
 	while (SM_NOADDR != adr) {
 	    if (GetV(adr, FIELD(0, 2), &nadr)) {
 		    ret = 1;
 		    break;
 	    }
 	    MemWrite(adr, FIELD(0, 2), w);
-        Print(" %c%04o/%c%04o", PLUS(adr), MAG(adr), PLUS(w), MAG(w));
+	    if (VERBOSE)
+            Print(" %c%04o/%c%04o", PLUS(adr), MAG(adr), PLUS(w), MAG(w));
 		if (adr == nadr) {
 			ret = 1;
 			break;
 		}
 		adr = nadr;
 	}
-	Print("\n");
+	if (VERBOSE)
+	    Print("\n");
 	return ret;
 }
 
@@ -4172,7 +4175,7 @@ void Run(Word p)
         DoInterrupts();
         if (IsWaiting())
             P = OLDP;
-        else {
+        else if (Running()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
 	}
@@ -4217,6 +4220,8 @@ void Finish(void)
 {
     int i;
     FILE *fd;
+
+    fflush(stderr);
 
     for (i = 0; i < MAX_DEVS; i++) {
         if (stdout == devs[i].fdout)
