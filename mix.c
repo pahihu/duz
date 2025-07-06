@@ -48,6 +48,7 @@
  *              fixed float parsing
  *              fixed smDADD
  *              added verbose assemble flag
+ *              FADD fix + random FP testing
  *  250705AP    B^E table
  *              added DoubleToFP/FPToDouble
  *				float AtomicExpr
@@ -1040,6 +1041,7 @@ void PrintNorm(const char *msg, int e, Word hi, Word lo)
 Word fpNORM(int e, Word hi_f, Word lo_f)
 {
 	Word f55, w;
+	int cnt;
 
 /*N1*/ PrintNorm("N1",e,hi_f,lo_f);
 	if (CY)
@@ -1053,6 +1055,7 @@ N2: PrintNorm("N2",e,hi_f,lo_f);
 /*N3*/PrintNorm("N3",e,hi_f,lo_f);
 	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e--;
 	goto N2;
+	cnt = 0;
 N4: PrintNorm("N4",e,hi_f,lo_f);
     smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e++;
 N5: PrintNorm("N5",e,hi_f,lo_f);
@@ -1064,8 +1067,13 @@ N5: PrintNorm("N5",e,hi_f,lo_f);
             hi_f = smSUB(hi_f, SIGN(hi_f) + BYTESIZE);
     }
 	lo_f = 0;
-	if (CY)
-		goto N4;
+	if (CY) {
+        if (++cnt > 30) {
+            Error("NORM: N4-N5 LOOP");
+            return 0;
+        }
+        goto N4;
+	}
 /*N6*/PrintNorm("N6",e,hi_f,lo_f);
 	if (-FP_Q < e) {
 		OT = ON; CI = GREATER;
@@ -1147,11 +1155,13 @@ Word fpADD(Word u, Word v)
 	/* u >= v */
 	fpFREXP(u, &ue, &uf);
 	fpFREXP(v, &ve, &vf);
+	PrintNorm(" U", ue, uf, 0);
+	PrintNorm(" V", ve, vf, 0);
 /*A3*/
 	we = ue;
 /*A4*/
 	if (ue - ve >= FP_P + 2) {
-		wf = uf; goto A7;
+		hi_wf = uf; wf = 0; goto A7;
 	}
 /*A5*/
 	smSRAX(&hi_wf, &wf, vf, SIGN(vf), ue - ve, SHIFT);
@@ -4559,6 +4569,52 @@ void PunchTrans(void)
         Error("CANNOT OPEN %s", buf);
 }
 
+#define MIN_FP  (00001000000U)
+int NTESTS;
+
+Word myrand(void)
+{
+    Word w;
+
+    w = rand() & 077777;
+    w <<= 15;
+    w += rand() & 077777;
+    if (rand() & 1)
+        w += SM_SIGN;
+    while (MAG(w) < MIN_FP)
+        w = SIGN(w) + (MAG(w) * BYTESIZE);
+    return w;
+}
+
+void TestFP(void)
+{
+    int i;
+    Word u, v, w0, w1;
+    double du, dv, dw0, dw1;
+    char buf0[32], buf1[32];
+
+    LPT = stderr;
+    srand(314159);
+    for (i = 0; i < NTESTS; i++) {
+        u = myrand(); v = myrand();
+        u = SIGN(u) + MAG(u);
+        v = SIGN(v) + MAG(v);
+        du = FPToDouble(u);
+        dv = FPToDouble(v);
+        dw0 = du + dv;
+        w0 = DoubleToFP(dw0);
+        w1 = fpADD(u, v);
+        dw1 = FPToDouble(w1);
+        sprintf(buf0, "%.5e", dw0);
+        sprintf(buf1, "%.5e", dw1);
+        if (!strcmp(buf0, buf1))
+            continue;
+        wprint(u); wprint(v);
+        fprintf(stderr,"%.5e + %.5e = %.5e %.5e %.5e\n", du, dv, dw0, dw1, fabs(dw0 - dw1));
+    }
+    exit(0);
+}
+
 
 #define NASMFILES 32
 
@@ -4609,6 +4665,14 @@ int main(int argc, char*argv[])
         case 'a': ASMONLY = ON; continue;
         case 'd': DUMP = ON; continue;
         case 'l': LNKLD = ON; continue;
+        case 'm':
+            NTESTS = 10000;
+			if (i + 1 < argc) {
+                arg = argv[i+1];
+                NTESTS = atoi(arg);
+			}
+            TestFP();
+			continue;
         case 'p': TRANS = ON; continue;
         case 'r': FF = ON; continue;
         case 's':
