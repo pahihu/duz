@@ -4,11 +4,21 @@
 RES        ORIG *+1
 START      LDA  F10
            FADD F13
+           FADD F34
            FMUL F20
+           FDIV F20
+           FIX
+           FLOT
+           STA  RES
+           LDA  F09
+           FIX
            STA  RES
            HLT  *
 F10        CON  +1.0
 F13        CON  1.3
 F20        CON  2.0
+F34        CON  3.4
+F09        CON  0.9
+F05        CON  0.5
            END  START
            

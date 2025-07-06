@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *  250705AP    FADD/FMUL/FIX fixes
  *  250705AP    B^E table
  *              added DoubleToFP/FPToDouble
  *				float AtomicExpr
@@ -717,6 +718,19 @@ void smDEC(Word *pw)
     *pw = smSUB(*pw, 1);
 }
 
+int ShiftAmount(int shmt, int maxshmt, int circ)
+{
+    int ret;
+
+    ret = shmt;
+    if (circ) {
+        ret = shmt MOD maxshmt;
+    } else {
+        ret = MIN(shmt, maxshmt);
+    }
+    return ret;
+}
+
 Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
@@ -725,7 +739,7 @@ Word smSLAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
     signA = SIGN(a); a = MAG(a);
     signX = SIGN(x); x = MAG(x);
 
-    shmt = shmt MOD 10;
+    shmt = ShiftAmount(shmt, 10, circ);
 	for (i = 0; i < shmt; i++) {
 		sav = MSBYTE(a);
 		a = MAG(BYTESIZE * a);
@@ -750,7 +764,7 @@ Word smSRAX(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
     signA = SIGN(a); a = MAG(a);
     signX = SIGN(x); x = MAG(x);
 
-    shmt = shmt MOD 10;
+    shmt = ShiftAmount(shmt, 10, circ);
 	for (i = 0; i < shmt; i++) {
 		sav = BYTE(x);
 		x /= BYTESIZE;
@@ -777,7 +791,7 @@ Word smSLB(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
     signA = SIGN(a); a = MAG(a);
     signX = SIGN(x); x = MAG(x);
 	
-    shmt = shmt MOD 60;
+    shmt = ShiftAmount(shmt, 60, circ);
 	for (i = 0; i < shmt; i++) {
 		sav = MSB(a);
 		a = MAG(2 * a);
@@ -803,7 +817,7 @@ Word smSRB(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
     signA = SIGN(a); a = MAG(a);
     signX = SIGN(x); x = MAG(x);
 	
-    shmt = shmt MOD 60;
+    shmt = ShiftAmount(shmt, 60, circ);
 	for (i = 0; i < shmt; i++) {
 		sav = x MOD 2;
 		x /= 2;
@@ -898,6 +912,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 #define FP_B        BYTESIZE
 #define FP_P		4
 #define FP_ONE		(00100000000U)
+#define FP_HALF     (04000000000U)
 #define FP_REPRB	(00001000000U)
 #define FP_Q		(BYTESIZE >> 1)
 
@@ -909,9 +924,10 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
  */
 #define FP_EPSILON  (000000200U)
 
+/* e, +/-FFFF0 */
 void fpFREXP(Word u, int *eq, Word *f)
 {
-	*f = SIGN(u) + field(u, FIELD(2,5));
+	*f = SIGN(u) + field(u, FIELD(2,5)) * BYTESIZE;
 	*eq = field(u, FIELD(1,1));
 }
 
@@ -923,7 +939,7 @@ double FPToDouble(Word u)
 
     fpFREXP(u, &eq, &f);
     sign = SIGN(f);
-    f = MAG(f);
+    f = MAG(f) DIV BYTESIZE;
 
     d = 0.0;
     for (i = 0; i < 4; i++) {
@@ -1005,43 +1021,55 @@ Word DoubleToFP(double d)
     return w;
 }
 
+void PrintNorm(const char *msg, int e, Word hi, Word lo)
+{
+    if (ON)
+        return;
+
+    Print("%s: (%d,%c%010o,%c%010o)\n",
+        msg,
+        e, PLUS(hi), MAG(hi),
+        PLUS(lo), MAG(lo));
+}
+
 /* assume |f| < b */
 Word fpNORM(int e, Word hi_f, Word lo_f)
 {
-	Word f11, w;
+	Word f55, w;
 
-/*N1*/
-	if (MAG(hi_f) >= FP_ONE)
+/*N1*/ PrintNorm("N1",e,hi_f,lo_f);
+	if (CY)
 		goto N4;
 	if (!MAG(hi_f)) {
 		e = 0; goto N7;
 	}
-N2:
-	if (MAG(hi_f) >= FP_REPRB)
+N2: PrintNorm("N2",e,hi_f,lo_f);
+	if (MAG(hi_f) >= FP_ONE)
 		goto N5;
-/*N3*/
-	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT);
-	e--;
+/*N3*/PrintNorm("N3",e,hi_f,lo_f);
+	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e--;
 	goto N2;
-N4: smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT);
-	e++;
-N5:	f11 = field(lo_f, FIELD(1,1));
-    if (FP_Q < f11) {
-		smINC(&hi_f);
-	} else if (FP_Q == f11) {
-        if ((MAG(hi_f) + FP_Q) MOD 2 == 0)
-            smDEC(&hi_f);
+N4: PrintNorm("N4",e,hi_f,lo_f);
+    smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e++;
+N5: PrintNorm("N5",e,hi_f,lo_f);
+    f55 = BYTE(hi_f);
+    if (FP_Q < f55) {
+		hi_f = smADD(hi_f, BYTESIZE);
+	} else if (FP_Q == f55 && IS_ZERO(lo_f)) {
+        if ((MAG(hi_f) + FP_Q * BYTESIZE) MOD 2 == 0)
+            hi_f = smSUB(hi_f, BYTESIZE);
     }
 	lo_f = 0;
-	if (FP_ONE == MAG(hi_f))
+	if (CY)
 		goto N4;
-/*N6*/
+/*N6*/PrintNorm("N6",e,hi_f,lo_f);
 	if (-FP_Q < e) {
 		OT = ON; CI = GREATER;
 	} else if (e > FP_Q - 1) {
 		OT = ON; CI = LESS;
 	}
-N7:	w = hi_f + (BYTE(e) << (4*6));
+N7: PrintNorm("N7",e,hi_f,lo_f);
+    w = SIGN(hi_f) + (MAG(hi_f) DIV BYTESIZE) + (BYTE(e) << (4*6));
 	return w;
 }
 
@@ -1145,16 +1173,14 @@ Word fpMUL(Word u, Word v)
 	fpFREXP(u, &ue, &uf);
 	fpFREXP(v, &ve, &vf);
 
-	Print("U=(%02d,%c%010o)\n",ue,PLUS(uf),MAG(uf));
-	Print("V=(%02d,%c%010o)\n",ve,PLUS(vf),MAG(vf));
+	PrintNorm(" U", ue, uf, 0);
+	PrintNorm(" V", ve, vf, 0);
 
     we = ue + ve - FP_Q;
-    smSLAX(&uf, NULL, uf, 0, 1, SHIFT);
-    smSLAX(&vf, NULL, vf, 0, 1, SHIFT);
     smMUL(&hi_wf, &wf, uf, vf);
 
     // 04 46, 31 46 00 00 00
-    Print("W=(%02d,%c%010o,%c%010o)\n",we,PLUS(hi_wf),MAG(hi_wf),PLUS(wf),MAG(wf));
+    PrintNorm(" W",we,hi_wf,wf);
 
     w = fpNORM(we, hi_wf, wf);
     return w;
@@ -1174,10 +1200,15 @@ Word fpDIV(Word u, Word v)
 	fpFREXP(u, &ue, &uf);
 	fpFREXP(v, &ve, &vf);
 
+	PrintNorm(" U", ue, uf, 0);
+	PrintNorm(" V", ve, vf, 0);
+
     we = ue - ve + FP_Q + 1;
     /* b^-1 * uf / vf  */
-    smSRAX(&hi_uf, &lo_uf, uf, 0, 1, SHIFT);
+    smSRAX(&hi_uf, &lo_uf, uf, SIGN(uf), 1, SHIFT);
+    PrintNorm(" U", 0, hi_uf, lo_uf);
     smDIV(&hi_wf, &re, hi_uf, lo_uf, vf);
+    PrintNorm(" W", 0, hi_wf, re);
 
     w = fpNORM(we, hi_wf, 0);
     return w;
@@ -1190,7 +1221,7 @@ Word fpFLOT(Word u)
 
 void fpCMP(Word u, Word v)
 {
-    Word uf, vf, vf_a, vf_x;
+    Word uf, vf, a, x;
     int ue, ve, ediff;
 
     v = smNEG(v);
@@ -1203,31 +1234,31 @@ void fpCMP(Word u, Word v)
 	fpFREXP(v, &ve, &vf);
 
     ediff = MIN(5, ue - ve);
-	smSRAX(&vf_a, &vf_x, vf, SIGN(vf), ediff, SHIFT);
-	vf_a = smADD(vf_a, uf);
+	smSRAX(&a, &x, vf, SIGN(vf), ediff, SHIFT);
+	a = smADD(a, uf);
 	if (CY) {
-        vf_x = 1;
-        smSRAX(&vf_a, &vf_x, vf_a, vf_x, 1, ROTATE);
+        x = 1;
+        smSRAX(&a, &x, a, x, 1, ROTATE);
         goto CheckSign;
 	} else {
-	    CI = smCMP(vf_a, FP_EPSILON);
+	    CI = smCMP(a, FP_EPSILON);
 	    if (GREATER == CI) {
             goto CheckSign;
 	    } else if (LESS == CI) {
             CI = EQUAL;
 	        return;
-        } else if (IS_ZERO(vf_x)) {
+        } else if (IS_ZERO(x)) {
             return;
-        } else if (IS_POSITIVE(vf_x) && IS_POSITIVE(vf_a)) {
+        } else if (IS_POSITIVE(x) && IS_POSITIVE(a)) {
             goto CheckSign;
-        } else if (IS_POSITIVE(vf_a)) {
+        } else if (IS_POSITIVE(a)) {
             return;
         }
 	}
 CheckSign:
-	if (SIGN(vf_a))
+	if (SIGN(a))
 	    CI = LESS;
-	else if (!MAG(vf_a))
+	else if (!MAG(a))
 	    CI = EQUAL;
 	else
 	    CI = GREATER;
@@ -1242,20 +1273,19 @@ Word fpFIX(Word u)
 	fpFREXP(u, &ue, &uf);
 	e = ue - FP_Q;
 
+	if (IS_ZERO(uf))
+	    return uf;
+
 	a = SIGN(uf); x = uf;
-	smSLAX(&x, NULL, x, 0, 1, SHIFT);
 	if (e > 0)
-		smSLAX(&a, &x, a, x, e, SHIFT);
-	else
-		x = 0;
-	f11 = field(x, FIELD(1,1));
-	if (FP_Q < f11)
-		smINC(&a);
-    else if (FP_Q == f11) {
-	    if ((MAG(a) + FP_Q) MOD 2 == 0) {
-			smDEC(&a);
-		}
-	}
+	    smSLAX(&a, &x, a, x, e, SHIFT);
+    else
+        smSRAX(&a, &x, a, x, -e, SHIFT);
+    if ((MAG(x) > FP_Q)
+        || (FP_HALF == MAG(x) && 0 == (MAG(a) MOD 2)))
+    {
+        a = smADD(a, SIGN(a) + 1);
+    }
 	return a;
 }
 
@@ -3079,7 +3109,7 @@ Word Expr(void)
 	        case '+': v = smADD(v, w); break;
 	        case '-': v = smSUB(v, w); break;
 	        case '*': smMUL(&w, &v, w, v); break;
-	        case '/': smDIV(&v, NULL, 0, v, MAG(w) ? w : 1);
+	        case '/': smDIV(&v, NULL, 0, v, MAG(w) ? w : 1); break;
 	        case 'D': /*//*/
                 smDIV(&v, NULL, v, 0, MAG(w) ? w : 1);
                 break;
@@ -3546,6 +3576,7 @@ void Status(Word P)
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
     double d;
+    Toggle isfix;
 	
 	INST = MemRead(P); w = MAG(INST);
 	C = BYTE(w); w /= BYTESIZE;
@@ -3569,6 +3600,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
     OLDFLOATOP = FLOATOP; FLOATOP=OFF;
 
+    isfix = OFF;
     if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
         || RANGE(C,8,23)
         || (56 == C && 6 != F)      /*!FCMP*/
@@ -3586,12 +3618,18 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         d = FPToDouble(rA);
         dprint(d);
         FLOATOP=ON;
+        isfix = ON;
     } else {
 	    xprint(OP);
         Print("     ");
     }
     if (OLDFLOATOP || FLOATOP) dprint(FPToDouble(rA));
 	else wprint(rA);
+	if (isfix) {
+	    FLOATOP = OFF;
+    } else if (5 == C && 6 == F) {/*FLOT*/
+        FLOATOP = ON;
+    }
 	wprint(rX);
 	for (i = 1; i <= 6; i++)
 		xprint(reg[i]);
@@ -3798,7 +3836,7 @@ int Step(void)
 	    if (6 == F) { /*FDIV*/
     	    if (CheckFloatOption())
     	        return 1;
-            rA = fpADD(rA, MemRead(M));
+            rA = fpDIV(rA, MemRead(M));
     	    Tyme += 9; TIMER += 9;
 	    } else {
             if (GetV(M, F, &w)) {
@@ -3842,11 +3880,13 @@ int Step(void)
                     return 1;
                 rA = fpFLOT(rA);
                 Tyme += 2; TIMER += 2;
+                break;
             case  7: /*FIX*/
                 if (CheckFloatOption())
                     return 1;
                 rA = fpFIX(rA);
                 Tyme += 2; TIMER += 2;
+                break;
             case  8: /*NEG*/
                 if (CheckBinaryOption())
                     return 1;
@@ -3862,6 +3902,7 @@ int Step(void)
 	                RestoreSTATE();
                 }
                 Tyme++;
+                break;
             case 10: /*XCH*/
                 if (CheckBinaryOption())
                     return 1;
@@ -4063,10 +4104,7 @@ int Step(void)
         case 4: /*CPMr*/
             if (CheckMasterOption())
                 return 1;
-		    w = smSUB(reg[x], M);
-		    if (SIGN(w)) CI = LESS;
-		    else if (!MAG(w)) CI = EQUAL;
-		    else CI = GREATER;
+		    CI = smCMP(reg[x], M);
             break;
 		default:
 			return FieldError(F);
