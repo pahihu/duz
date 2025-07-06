@@ -46,6 +46,8 @@
  *  250705AP    FADD/FMUL/FIX fixes
  *              fixed sign in fpNORM rounding
  *              fixed float parsing
+ *              fixed smDADD
+ *              added verbose assemble flag
  *  250705AP    B^E table
  *              added DoubleToFP/FPToDouble
  *				float AtomicExpr
@@ -249,7 +251,7 @@ unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 int WaitRTI;
 Toggle CY;
-Toggle TRACEOP, TRACEIO, TRACEA;
+Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
 
 #define rA	 reg[0]
@@ -1122,6 +1124,7 @@ void smDADD(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
 		
     if (MAG(hiY) > MAG(hiX) || (MAG(hiY) == MAG(hiX) && MAG(loY) >= MAG(loX))) {
         uDSUB(phi, plo, MAG(hiY), MAG(loY), MAG(hiX), MAG(loX));
+        return;
     }        
     uDSUB(&hiZ, &loZ, MAG(hiX), MAG(loX), MAG(hiY), MAG(loY));
     *phi = SIGN(hiX) + hiZ;
@@ -1152,6 +1155,8 @@ Word fpADD(Word u, Word v)
 	}
 /*A5*/
 	smSRAX(&hi_wf, &wf, vf, SIGN(vf), ue - ve, SHIFT);
+	PrintNorm(" V", 0, hi_wf, wf);
+	PrintNorm(" U", 0, uf, 0);
 	smDADD(&hi_wf, &wf, hi_wf, wf, uf, 0);
 A7:
 	w = fpNORM(we, hi_wf, wf);
@@ -2679,6 +2684,8 @@ int LinkLoad(Word adr, Word w)
 	Word nadr;
 	int ret = 0;
 	
+	if (!VERBOSE)
+	    return 0;
     Info("LINKLOAD");
 	while (SM_NOADDR != adr) {
 	    if (GetV(adr, FIELD(0, 2), &nadr)) {
@@ -4363,6 +4370,7 @@ void Init(void)
     ZERO = 0;
 	STATE = S_HALT; Halt();
 	FLOATOP = OLDFLOATOP = OFF;
+	VERBOSE = OFF;
 
     InitMemory();
     atexit(Finish);
@@ -4388,7 +4396,7 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lpr] file1...\n");
+	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprv] file1...\n");
     Print("options:\n");
     Print("    -g [unit]  push GO button on unit (def. card reader)\n");
     Print("    -c bcfimx  MIX config (also from MIXCONFIG env.var):\n");
@@ -4407,6 +4415,7 @@ void Usage(void)
     Print("    -r         free fmt MIXAL\n");
     Print("    -s address set START address\n");
     Print("    -t aio     enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
+    Print("    -v         verbose assembling\n");
     Print("\n");
 	exit(1);
 }
@@ -4614,6 +4623,7 @@ int main(int argc, char*argv[])
                 continue;
 			}
 			break;
+        case 'v': VERBOSE = ON; break;
 		}
 		Usage();
 	}

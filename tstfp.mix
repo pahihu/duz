@@ -20,14 +20,15 @@ START      LDA  F10
            LDA  FPI
            FIX
            STA  RES
-           LDA  =113=
+* APPROXIMATIONS OF PI
+           LDA  =113=               1) 355/113
            FLOT
            STA  DENOM
            LDA  =355=
            FLOT
            FDIV =113.0=
            STA  APPROX1
-           LDA  =22=
+           LDA  =22=                2) 22/7
            FLOT
            FDIV =7.0=
            STA  APPROX2
