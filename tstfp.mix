@@ -3,6 +3,9 @@
            ORIG 1000
 RES        ORIG *+1
 DENOM      ORIG *+1
+APPROX1    ORIG *+1
+APPROX2    ORIG *+1
+DIFF       ORIG *+1
 START      LDA  F10
            FADD F13
            FADD F34
@@ -23,7 +26,13 @@ START      LDA  F10
            LDA  =355=
            FLOT
            FDIV =113.0=
-           STA  RES
+           STA  APPROX1
+           LDA  =22=
+           FLOT
+           FDIV =7.0=
+           STA  APPROX2
+           FSUB APPROX1
+           STA  DIFF
            HLT  *
 F10        CON  +1.0
 F13        CON  1.3
