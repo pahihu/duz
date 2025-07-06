@@ -44,6 +44,8 @@
  *  History:
  *  ========
  *  250705AP    FADD/FMUL/FIX fixes
+ *              fixed sign in fpNORM rounding
+ *              fixed float parsing
  *  250705AP    B^E table
  *              added DoubleToFP/FPToDouble
  *				float AtomicExpr
@@ -1054,10 +1056,10 @@ N4: PrintNorm("N4",e,hi_f,lo_f);
 N5: PrintNorm("N5",e,hi_f,lo_f);
     f55 = BYTE(hi_f);
     if (FP_Q < f55) {
-		hi_f = smADD(hi_f, BYTESIZE);
+		hi_f = smADD(hi_f, SIGN(hi_f) + BYTESIZE);
 	} else if (FP_Q == f55 && IS_ZERO(lo_f)) {
         if ((MAG(hi_f) + FP_Q * BYTESIZE) MOD 2 == 0)
-            hi_f = smSUB(hi_f, BYTESIZE);
+            hi_f = smSUB(hi_f, SIGN(hi_f) + BYTESIZE);
     }
 	lo_f = 0;
 	if (CY)
@@ -1266,7 +1268,7 @@ CheckSign:
 
 Word fpFIX(Word u)
 {
-	Word uf, f11;
+	Word uf;
 	Word a, x;
 	int ue, e;
 
@@ -1281,7 +1283,8 @@ Word fpFIX(Word u)
 	    smSLAX(&a, &x, a, x, e, SHIFT);
     else
         smSRAX(&a, &x, a, x, -e, SHIFT);
-    if ((MAG(x) > FP_Q)
+    PrintNorm(" W", 0, a, x);
+    if ((MAG(x) > FP_HALF)
         || (FP_HALF == MAG(x) && 0 == (MAG(a) MOD 2)))
     {
         a = smADD(a, SIGN(a) + 1);
@@ -2764,7 +2767,8 @@ int GetSym(void)
     isnum = 1; isfloat = 0; SBEG = SEND = NULL;
     MemSet(S, ' ', sizeof(S)-1);
     while (CH && ((d = IsDigit(CH)) || IsAlpha(CH))) {
-	    SBEG = PLN-1;
+        if (!SBEG)
+            SBEG = PLN-1;
         isnum = isnum && d;
         if (n < 10)
             S[n] = CH;
@@ -2794,7 +2798,7 @@ int GetSym(void)
 		    if (n == savn)
                 AsmError(EA_INVNUM);
 	    }
-	    SEND = PLN-1;
+	    SEND = PLN-2;
     }
     if (!isfloat && n > 9)
         AsmError(EA_MAXLEN);
@@ -2813,6 +2817,7 @@ int GetSym(void)
 	    if (1 != sscanf(buf, "%lg", &D))
 		    AsmError(EA_INVNUM);
 	    N = DoubleToFP(D);
+		// Print("BUF='%s' D=%g N=%c%010o\n", buf, D, PLUS(N), MAG(N));
 	    T = TOK_FLT;
     } else
         T = TOK_SYM;

@@ -2,6 +2,7 @@
 *LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
            ORIG 1000
 RES        ORIG *+1
+DENOM      ORIG *+1
 START      LDA  F10
            FADD F13
            FADD F34
@@ -13,6 +14,16 @@ START      LDA  F10
            LDA  F09
            FIX
            STA  RES
+           LDA  FPI
+           FIX
+           STA  RES
+           LDA  =113=
+           FLOT
+           STA  DENOM
+           LDA  =355=
+           FLOT
+           FDIV =113.0=
+           STA  RES
            HLT  *
 F10        CON  +1.0
 F13        CON  1.3
@@ -20,5 +31,7 @@ F20        CON  2.0
 F34        CON  3.4
 F09        CON  0.9
 F05        CON  0.5
+FPI        CON  3.14159
+F113       CON  113.0
            END  START
            
