@@ -44,6 +44,7 @@
  *  History:
  *  ========
  *  250707AP    fixed fpNORM, uDSUB, smMUL, smDIV, fpDIV
+ *              saving test vectors in TestData
  *  250706AP    FADD/FMUL/FIX fixes
  *              fixed sign in fpNORM rounding
  *              fixed float parsing
@@ -4725,6 +4726,8 @@ Word myrand(void)
     return w;
 }
 
+Word *TestData;
+
 void TestFPOp(char op)
 {
     int i, cnt, nrounded, nfailed;
@@ -4733,6 +4736,7 @@ void TestFPOp(char op)
     char buf0[32], buf1[32];
     double (*fp2d)(Word);
     Toggle waserr;
+    int N;
 
     LPT = stderr; waserr = OFF;
     PrintLPT("=== T E S T I N G  F P %c ===\n", op);
@@ -4740,8 +4744,15 @@ void TestFPOp(char op)
     fp2d = FPToDouble2;
     // NTESTS = 0;
     cnt = nfailed = nrounded = 0;
-    for (i = 0; i < NTESTS; i++) {
-        u = myrand(); v = myrand();
+    N = NTESTS;
+    for (i = 0; i < N; i++) {
+        if ('/' == op) {
+            u = myrand();
+            v = myrand();
+        } else {
+            u = TestData[2*cnt];
+            v = TestData[2*cnt + 1];
+        }
         u = SIGN(u) + MAG(u);
         v = SIGN(v) + MAG(v);
         du = fp2d(u);
@@ -4754,7 +4765,7 @@ void TestFPOp(char op)
         case '*': dw0 = du * dv; break;
         case '/':
             if (!MAG(v)) {
-                NTESTS++;
+                N++;
                 continue;
             }
             dw0 = du / dv;
@@ -4762,7 +4773,7 @@ void TestFPOp(char op)
         }
         dw0 = FPToDouble(w0 = RoundDoubleToFP(dw0, '/' == op));
         if (SM_NAN == w0) {
-            NTESTS++;
+            N++;
             continue;
         }
         OT = OFF;
@@ -4773,7 +4784,7 @@ void TestFPOp(char op)
         case '/':
             w1 = fpDIV(u, v);
             if (OT) {
-                NTESTS++;
+                N++;
                 continue;
             }
             break;
@@ -4781,6 +4792,11 @@ void TestFPOp(char op)
         dw1 = fp2d(w1);
         sprintf(buf0, "%.5e", dw0);
         sprintf(buf1, "%.5e", dw1);
+        if ('/' == op) {
+            TestData[2*cnt] = u;
+            TestData[2*cnt + 1] = v;
+            // PrintLPT("DU=%.5e DV=%.5e\n", du, dv);
+        }
         cnt++;
         if (0 == (cnt & SM_MASK(17))) {
             if (waserr) {
@@ -4817,10 +4833,15 @@ void TestFPOp(char op)
 
 void TestFP(void)
 {
-    TestFPOp('+');
-    TestFPOp('-');
-    TestFPOp('*');
+    TestData = (Word*)malloc(NTESTS * 2 * sizeof(Word));
+    if (NULL == TestData) {
+        Warning("TESDATA ALLOC FAILED");
+        exit(1);
+    }
     TestFPOp('/');
+    TestFPOp('*');
+    TestFPOp('-');
+    TestFPOp('+');
     exit(0);
 }
 
