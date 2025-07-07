@@ -4725,7 +4725,7 @@ Word myrand(void)
     return w;
 }
 
-void TestFP(void)
+void TestFPOp(char op)
 {
     int i, cnt, nrounded, nfailed;
     Word u, v, w0, w1;
@@ -4733,10 +4733,9 @@ void TestFP(void)
     char buf0[32], buf1[32];
     double (*fp2d)(Word);
     Toggle waserr;
-    char op;
 
-    op = '/';
     LPT = stderr; waserr = OFF;
+    PrintLPT("=== T E S T I N G  F P %c ===\n", op);
     srand(314159);
     fp2d = FPToDouble2;
     // NTESTS = 0;
@@ -4749,27 +4748,35 @@ void TestFP(void)
         dv = fp2d(u);
         //PrintLPT("%c%010o U=%.6e V=%.6e\n", PLUS(u), MAG(u), du, dv);
         dv = fp2d(v);
-        // dw0 = du + dv;
-        // dw0 = du - dv;
-        // dw0 = du * dv;
-        if (!MAG(v)) {
-            NTESTS++;
-            continue;
+        switch (op) {
+        case '+': dw0 = du + dv; break;
+        case '-': dw0 = du - dv; break;
+        case '*': dw0 = du * dv; break;
+        case '/':
+            if (!MAG(v)) {
+                NTESTS++;
+                continue;
+            }
+            dw0 = du / dv;
+            break;
         }
-        dw0 = du / dv;
         dw0 = FPToDouble(w0 = RoundDoubleToFP(dw0, '/' == op));
         if (SM_NAN == w0) {
             NTESTS++;
             continue;
         }
         OT = OFF;
-        // w1 = fpADD(u, v);
-        // w1 = fpSUB(u, v);
-        // w1 = fpMUL(u, v);
-        w1 = fpDIV(u, v);
-        if (OT) {
-            NTESTS++;
-            continue;
+        switch (op) {
+        case '+': w1 = fpADD(u, v); break;
+        case '-': w1 = fpSUB(u, v); break;
+        case '*': w1 = fpMUL(u, v); break;
+        case '/':
+            w1 = fpDIV(u, v);
+            if (OT) {
+                NTESTS++;
+                continue;
+            }
+            break;
         }
         dw1 = fp2d(w1);
         sprintf(buf0, "%.5e", dw0);
@@ -4792,6 +4799,7 @@ void TestFP(void)
         waserr = ON;
     }
     nl();
+    PrintLPT("  Count: #%d\n", cnt);
     PrintLPT(" Failed: #%d\n", nfailed);
     PrintLPT("Rounded: #%d\n", nrounded);
     if (0 == NTESTS) {
@@ -4805,6 +4813,14 @@ void TestFP(void)
         PrintLPT("W0=%.5e\n", FPToDouble(w0));
         PrintLPT("W1=%.5e\n", FPToDouble(w1));
     }
+}
+
+void TestFP(void)
+{
+    TestFPOp('+');
+    TestFPOp('-');
+    TestFPOp('*');
+    TestFPOp('/');
     exit(0);
 }
 
