@@ -43,7 +43,8 @@
  *
  *  History:
  *  ========
- *  250705AP    FADD/FMUL/FIX fixes
+ *  250707AP    fpNORM fixes
+ *  250706AP    FADD/FMUL/FIX fixes
  *              fixed sign in fpNORM rounding
  *              fixed float parsing
  *              fixed smDADD
@@ -269,6 +270,7 @@ int NTESTS;
 #define ZERO reg[9]
 
 
+void PrintNorm(const char *msg, int e, Word hi, Word lo);
 void MemWrite(Word a, int f, Word w);
 Word MemRead(Word a);
 int Stop(void);
@@ -938,6 +940,91 @@ void fpFREXP(Word u, int *eq, Word *f)
 	*eq = field(u, FIELD(1,1));
 }
 
+double FPToDouble2(Word u)
+{
+    Word uf;
+    int ue, sign;
+    union {
+        unsigned long u;
+        double d;
+    } ret;
+
+    fpFREXP(u, &ue, &uf);
+    ue -= FP_Q;
+    // PrintLPT("(%d, %c%010o)\n", ue, PLUS(uf), MAG(uf));
+    sign = SIGN(uf); uf = MAG(uf);
+    ue *= 6;    // B^ue
+    if (0 == uf)
+        return 0.0;
+    // FFFF0
+    while (0 == (SM_MSB & uf)) {
+        ue--; uf <<= 1;
+    }
+    ASSERT(SM_MSB & uf);
+    ue--; uf = MAG(uf << 1); uf <<= 2;
+    ue += 1023;
+    ret.u = sign ? 1 : 0; ret.u <<= 11;
+    ret.u += ue; ret.u <<= 52;
+    ret.u += ((unsigned long)uf << 20);
+    // PrintLPT("%lo\n", ret.u);
+    return ret.d;
+}
+
+int mymod(int a, int b)
+{
+    int rat;
+
+    rat = floor((double)a / b);
+    return a - b * rat;
+}
+
+Word RoundDoubleToFP(double d)
+{
+    unsigned long fract;
+    int i, e, sign, sav;
+    Word fract55, fract_lo;
+
+    union {
+        double d;
+        unsigned long u;
+    } ret;
+
+    ret.d = d;
+    fract = ret.u & 0177777777777777777ULL; ret.u >>= 52;
+    e     = ret.u & 03777ULL; ret.u >>= 11;
+    sign  = ret.u;
+
+    fract += 1ULL << 52;                                        /* add implicit 1.        */
+    fract_lo = fract & 037777777ULL;                            /* lower 23 bits          */
+    fract_lo <<= 7;
+    fract >>= 23;
+    e -= 1023; e++;
+    /* 1.xxxxx1 */
+    PrintNorm("F0", e, fract, fract_lo);
+    if (0 != mymod(e, 6)) {                                     /* align to multiple of 6 */
+        for (i = mymod(e, 6); i < 6; i++) {
+            sav = fract & 1;
+            fract >>= 1; e++;
+            fract_lo >>= 1;
+            if (sav)
+                fract_lo += SM_MSB;
+            PrintNorm("FI", e, fract, fract_lo);
+        }
+    }
+    PrintNorm("FE", e, fract, fract_lo);
+    ASSERT(0 == mymod(e, 6));
+    e = e DIV 6 + FP_Q;
+    fract55 = BYTE(fract);
+    if ((FP_Q < fract55)
+        || (FP_Q == fract55 && fract_lo)
+        || (FP_Q == fract55 && (0 == (fract DIV BYTESIZE) MOD 2)))
+    {
+        fract += 0100U;
+    }
+    fract = fract DIV BYTESIZE;
+    return (sign ? SM_SIGN : 0) + (e << 4*6) + fract;
+}
+
 double FPToDouble(Word u)
 {
     Word f;
@@ -1042,11 +1129,10 @@ void PrintNorm(const char *msg, int e, Word hi, Word lo)
 }
 
 /* assume |f| < b */
-Word LAST55;
+Toggle LASTROUNDED;
 Word fpNORM(int e, Word hi_f, Word lo_f)
 {
 	Word f55, w;
-	int cnt;
 
 /*N1*/ PrintNorm("N1",e,hi_f,lo_f);
 	if (CY) {
@@ -1063,17 +1149,24 @@ N2: PrintNorm("N2",e,hi_f,lo_f);
 /*N3*/PrintNorm("N3",e,hi_f,lo_f);
 	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e--;
 	goto N2;
-	cnt = 0;
 N4: PrintNorm("N4",e,hi_f,lo_f);
     smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, ROTATE); e++;
 N5: PrintNorm("N5",e,hi_f,lo_f);
-    LAST55 = f55 = BYTE(hi_f);
-    if (FP_Q < f55) {
+    f55 = BYTE(hi_f);
+    LASTROUNDED = OFF;
+    if (FP_Q < f55
+        || (FP_Q == f55 && !IS_ZERO(lo_f))
+        || (FP_Q == f55 && 0 == (hi_f DIV BYTESIZE) MOD 2))
+    {
+        LASTROUNDED = ON;
 		hi_f = smADD(hi_f, SIGN(hi_f) + BYTESIZE);
-	} else if (FP_Q == f55 && IS_ZERO(lo_f)) {
+	}
+/*
+      else if (FP_Q == f55 && IS_ZERO(lo_f)) {
         if ((MAG(hi_f) + FP_Q * BYTESIZE) MOD 2 == 0)
             hi_f = smSUB(hi_f, SIGN(hi_f) + BYTESIZE);
     }
+*/
 	lo_f = 0;
 	if (CY) {
         lo_f = 1;
@@ -4598,41 +4691,57 @@ Word myrand(void)
 
 void TestFP(void)
 {
-    int i;
+    int i, nrounded, nfailed;
     Word u, v, w0, w1;
     double du, dv, dw0, dw1;
     char buf0[32], buf1[32];
+    double (*fp2d)(Word);
 
     LPT = stderr;
     srand(314159);
+    fp2d = FPToDouble2;
     // NTESTS = 0;
+    nfailed = nrounded = 0;
     for (i = 0; i < NTESTS; i++) {
         u = myrand(); v = myrand();
         u = SIGN(u) + MAG(u);
         v = SIGN(v) + MAG(v);
-        du = FPToDouble(u);
-        dv = FPToDouble(v);
-        dw0 = du * dv;
-        w0 = DoubleToFP(dw0);
+        du = fp2d(u);
+        dv = fp2d(u);
+        //PrintLPT("%c%010o U=%.6e V=%.6e\n", PLUS(u), MAG(u), du, dv);
+        dv = fp2d(v);
+        dw0 = du + dv;
+        // dw0 = du * dv;
+        // w0 = DoubleToFP(dw0);
+        dw0 = FPToDouble(w0 = RoundDoubleToFP(dw0));
         if (SM_NAN == w0) {
             NTESTS++;
             continue;
         }
-        w1 = fpMUL(u, v);
-        dw1 = FPToDouble(w1);
+        w1 = fpADD(u, v);
+        // w1 = fpMUL(u, v);
+        dw1 = fp2d(w1);
         sprintf(buf0, "%.5e", dw0);
         sprintf(buf1, "%.5e", dw1);
+        if (LASTROUNDED)
+            nrounded++;
         if (!strcmp(buf0, buf1))
             continue;
-        if (LAST55 < FP_Q)
-            continue;
+        nfailed++;
         wprint(u); wprint(v);
         fprintf(stderr,"%.5e + %.5e = %.5e %.5e %.5e\n", du, dv, dw0, dw1, fabs(dw0 - dw1));
     }
-    u = 06701231710U;
-    v = 06616323052U;
-    w0 = fpADD(u, v);
-    PrintLPT("W=%.5e\n", FPToDouble(w0));
+    PrintLPT(" Failed: #%d\n", nfailed);
+    PrintLPT("Rounded: #%d\n", nrounded);
+    u = SM_SIGN + 01102202326U;
+    v = 01004570546U;
+    w1 = fpADD(u, v);
+    du = FPToDouble2(u);
+    dv = FPToDouble2(v);
+    w0 = RoundDoubleToFP(du + dv);
+    PrintLPT("%.5e + %.5e = %.5e\n", du, dv, du + dv);
+    PrintLPT("W0=%.5e\n", FPToDouble(w0));
+    PrintLPT("W1=%.5e\n", FPToDouble(w1));
     exit(0);
 }
 
