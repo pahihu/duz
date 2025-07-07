@@ -44,4 +44,3 @@ F05        CON  0.5
 FPI        CON  3.14159
 F113       CON  113.0
            END  START
-           
