@@ -43,7 +43,7 @@
  *
  *  History:
  *  ========
- *  250707AP    fpNORM fixes
+ *  250707AP    fixed fpNORM, uDSUB, smMUL, smDIV, fpDIV
  *  250706AP    FADD/FMUL/FIX fixes
  *              fixed sign in fpNORM rounding
  *              fixed float parsing
@@ -312,6 +312,12 @@ unsigned IX_MASK;
 #define	SM_WORD		SM_MASK(30)
 #define MSB(x)		((x) & SM_MSB)
 #define MAG(x)		((x) & SM_WORD)
+
+/* 31bit */
+#define SM_MSB1		(1U << 30)
+#define SM_WORD1    SM_MASK(31)
+#define MSB1(x)		((x) & SM_MSB1)
+#define MAG1(x)		((x) & SM_WORD1)
 
 #define MOD         %
 #define DIV         /
@@ -818,6 +824,28 @@ Word smSLB(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 	return a;
 }
 
+Word uSLB1(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
+{
+	int i, sav;
+
+    a = MAG1(a); x = MAG(x);
+
+    shmt = ShiftAmount(shmt, 61, circ);
+	for (i = 0; i < shmt; i++) {
+		sav = MSB1(a);
+		a = MAG1(2 * a);
+		if (MSB(x))
+			a++;
+		x = MAG(2 * x);
+		if (circ && sav)
+			x++;
+	}
+
+	*pa = a;
+	if (px) *px = x;
+	return a;
+}
+
 Word smSRB(Word *pa, Word *px, Word a, Word x, int shmt, int circ)
 {
 	int i, sav;
@@ -868,8 +896,8 @@ void smMUL(Word *pa, Word *px, Word a, Word x)
 	lo = smADD(lo, LO(mid1) << 15);
 	if (CY) cy++;
     lo = smADD(lo, LO(mid2) << 15);
-	if (CY) {
-        cy++;
+    if (CY) cy++;
+	if (cy) {
         hi = smADD(hi, cy);
     }
 	hi = smADD(hi, HI(mid1));
@@ -896,13 +924,13 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
         return;
 	}
 	ma = MAG(a); mx = MAG(x); mv = MAG(v);
-    smSLB(&ma, &mx, ma, mx, 1, SHIFT);
+    uSLB1(&ma, &mx, ma, mx, 1, SHIFT);
 	for (i = 0; i < 30; i++) {
 		d = 0;
 		if (ma >= mv) {
 			d = 1; ma -= mv;
 		}
-		smSLB(&ma, &mx, ma, mx, 1, SHIFT); mx += d;
+		uSLB1(&ma, &mx, ma, mx, 1, SHIFT); mx += d;
 	}
     ma = ma DIV 2;
     /* rX: ma - rem, rA: mx - quo */
@@ -978,7 +1006,7 @@ int mymod(int a, int b)
     return a - b * rat;
 }
 
-Word RoundDoubleToFP(double d)
+Word RoundDoubleToFP(double d, int droplo)
 {
     unsigned long fract;
     int i, e, sign, sav;
@@ -1012,6 +1040,10 @@ Word RoundDoubleToFP(double d)
         }
     }
     PrintNorm("FE", e, fract, fract_lo);
+    if (droplo) {
+        PrintNorm(" F", e, fract, fract_lo);
+        fract_lo = 0;
+    }
     ASSERT(0 == mymod(e, 6));
     e = e DIV 6 + FP_Q;
     fract55 = BYTE(fract);
@@ -1161,12 +1193,6 @@ N5: PrintNorm("N5",e,hi_f,lo_f);
         LASTROUNDED = ON;
 		hi_f = smADD(hi_f, SIGN(hi_f) + BYTESIZE);
 	}
-/*
-      else if (FP_Q == f55 && IS_ZERO(lo_f)) {
-        if ((MAG(hi_f) + FP_Q * BYTESIZE) MOD 2 == 0)
-            hi_f = smSUB(hi_f, SIGN(hi_f) + BYTESIZE);
-    }
-*/
 	lo_f = 0;
 	if (CY) {
         lo_f = 1;
@@ -1204,7 +1230,7 @@ void uDSUB(unsigned *phi, unsigned *plo, unsigned hiX, unsigned loX, unsigned hi
     if (loX >= loY) {
         *plo = loX - loY;
     } else {
-        *plo = loY + (SM_MSB << 1) - loX;
+        *plo = loX + (SM_MSB << 1) - loY;
         hiY++;
     }
     *phi = hiX - hiY;
@@ -1320,9 +1346,12 @@ Word fpDIV(Word u, Word v)
 	PrintNorm(" U", ue, uf, 0);
 	PrintNorm(" V", ve, vf, 0);
 
-    we = ue - ve + FP_Q + 1;
+    we = ue - ve + FP_Q /*+ 1*/;
     /* b^-1 * uf / vf  */
-    smSRAX(&hi_uf, &lo_uf, uf, SIGN(uf), 1, SHIFT);
+    hi_uf = uf;
+    if (LESS != smCMP(MAG(uf), MAG(vf))) {
+        smSRAX(&hi_uf, NULL, uf, 0, 1, SHIFT); we++;
+    }
     PrintNorm(" U", 0, hi_uf, lo_uf);
     smDIV(&hi_wf, &re, hi_uf, lo_uf, vf);
     PrintNorm(" W", 0, hi_wf, re);
@@ -4679,29 +4708,39 @@ Word myrand(void)
 {
     Word w;
 
-    w = rand() & 077777;
+    w = rand() & 077777U;
     w <<= 15;
-    w += rand() & 077777;
+    w += rand() & 077777U;
     if (rand() & 1)
         w += SM_SIGN;
-    while (MAG(w) < MIN_FP)
-        w = SIGN(w) + (MAG(w) * BYTESIZE);
+    if (!MAG(w))
+        return w;
+    while (0 == (w & 0777777U)) {
+        w += rand() & 07777U;
+    }
+    while (0 == (w & 00077000000U)) {
+        w = SIGN(w) + (w & 07700000000U) + (w & 00000777777U) * BYTESIZE;
+    }
+    ASSERT(w & 00077000000U);
     return w;
 }
 
 void TestFP(void)
 {
-    int i, nrounded, nfailed;
+    int i, cnt, nrounded, nfailed;
     Word u, v, w0, w1;
     double du, dv, dw0, dw1;
     char buf0[32], buf1[32];
     double (*fp2d)(Word);
+    Toggle waserr;
+    char op;
 
-    LPT = stderr;
+    op = '/';
+    LPT = stderr; waserr = OFF;
     srand(314159);
     fp2d = FPToDouble2;
     // NTESTS = 0;
-    nfailed = nrounded = 0;
+    cnt = nfailed = nrounded = 0;
     for (i = 0; i < NTESTS; i++) {
         u = myrand(); v = myrand();
         u = SIGN(u) + MAG(u);
@@ -4710,38 +4749,62 @@ void TestFP(void)
         dv = fp2d(u);
         //PrintLPT("%c%010o U=%.6e V=%.6e\n", PLUS(u), MAG(u), du, dv);
         dv = fp2d(v);
-        dw0 = du + dv;
+        // dw0 = du + dv;
+        // dw0 = du - dv;
         // dw0 = du * dv;
-        // w0 = DoubleToFP(dw0);
-        dw0 = FPToDouble(w0 = RoundDoubleToFP(dw0));
+        if (!MAG(v)) {
+            NTESTS++;
+            continue;
+        }
+        dw0 = du / dv;
+        dw0 = FPToDouble(w0 = RoundDoubleToFP(dw0, '/' == op));
         if (SM_NAN == w0) {
             NTESTS++;
             continue;
         }
-        w1 = fpADD(u, v);
+        OT = OFF;
+        // w1 = fpADD(u, v);
+        // w1 = fpSUB(u, v);
         // w1 = fpMUL(u, v);
+        w1 = fpDIV(u, v);
+        if (OT) {
+            NTESTS++;
+            continue;
+        }
         dw1 = fp2d(w1);
         sprintf(buf0, "%.5e", dw0);
         sprintf(buf1, "%.5e", dw1);
+        cnt++;
+        if (0 == (cnt & SM_MASK(17))) {
+            if (waserr) {
+                waserr = OFF;
+                nl();
+            }
+            PrintLPT("*");
+        }
         if (LASTROUNDED)
             nrounded++;
         if (!strcmp(buf0, buf1))
             continue;
         nfailed++;
-        wprint(u); wprint(v);
-        fprintf(stderr,"%.5e + %.5e = %.5e %.5e %.5e\n", du, dv, dw0, dw1, fabs(dw0 - dw1));
+        nl(); wprint(u); wprint(v);
+        PrintLPT("%.5e %c %.5e = %.5e %.5e %.5e", du, op, dv, dw0, dw1, fabs(dw0 - dw1));
+        waserr = ON;
     }
+    nl();
     PrintLPT(" Failed: #%d\n", nfailed);
     PrintLPT("Rounded: #%d\n", nrounded);
-    u = SM_SIGN + 01102202326U;
-    v = 01004570546U;
-    w1 = fpADD(u, v);
-    du = FPToDouble2(u);
-    dv = FPToDouble2(v);
-    w0 = RoundDoubleToFP(du + dv);
-    PrintLPT("%.5e + %.5e = %.5e\n", du, dv, du + dv);
-    PrintLPT("W0=%.5e\n", FPToDouble(w0));
-    PrintLPT("W1=%.5e\n", FPToDouble(w1));
+    if (0 == NTESTS) {
+        u = SM_SIGN + 04101766600U;
+        v = 07113757507U;
+        w1 = fpDIV(u, v);
+        du = FPToDouble2(u);
+        dv = FPToDouble2(v);
+        w0 = RoundDoubleToFP(du / dv, '/' == op);
+        PrintLPT("%.5e %c %.5e = %.5e\n", du, op, dv, du / dv);
+        PrintLPT("W0=%.5e\n", FPToDouble(w0));
+        PrintLPT("W1=%.5e\n", FPToDouble(w1));
+    }
     exit(0);
 }
 
