@@ -43,6 +43,8 @@
  *
  *  History:
  *  ========
+ *  250708AP    binary test data compare
+ *              exponent underflow/overflow handling
  *  250707AP    fixed fpNORM, uDSUB, smMUL, smDIV, fpDIV
  *              saving test vectors in TestData
  *  250706AP    FADD/FMUL/FIX fixes
@@ -953,6 +955,8 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 #define FP_HALF     (04000000000U)
 #define FP_REPRB	(00001000000U)
 #define FP_Q		(BYTESIZE >> 1)
+#define FP_MIN      (00000000001U)
+#define FP_MAX      (07777777777U)
 
 /* 
  * Vol.2 pp. 234.
@@ -1047,6 +1051,15 @@ Word RoundDoubleToFP(double d, int droplo)
     }
     ASSERT(0 == mymod(e, 6));
     e = e DIV 6 + FP_Q;
+    if (e < 0) {
+        if (VERBOSE)
+            Warning("ROUNDDOUBLE: EXPONENT UNDERFLOW");
+        return (sign ? SM_SIGN : 0) + FP_MIN;
+    } else if (e > BYTESIZE-1) {
+        if (VERBOSE)
+            Warning("ROUNDDOUBLE: EXPONENT OVERFLOW");
+        return (sign ? SM_SIGN : 0) + FP_MAX;
+    }
     fract55 = BYTE(fract);
     if ((FP_Q < fract55)
         || (FP_Q == fract55 && fract_lo)
@@ -1136,11 +1149,13 @@ Word DoubleToFP(double d)
     Approximate(d, fracs); e++;
     eq = e + FP_Q;
     if (eq >= BYTESIZE) {
-        // Warning("EXPONENT OVERFLOW %d", eq);
-        return SM_NAN;
+        if (VERBOSE)
+            Warning("DOUBLETOFP: EXPONENT OVERFLOW %d", eq);
+        return (sign ? SM_SIGN : 0) + FP_MAX;
     } else if (eq < 0) {
-        // Warning("EXPONENT UNDERFLOW %d", eq);
-        return SM_NAN;
+        if (VERBOSE)
+            Warning("DOUBLETOFP: EXPONENT UNDERFLOW %d", eq);
+        return (sign ? SM_SIGN : 0) + FP_MIN;
     }
     for (i = 0; i < 4; i++) {
         w = BYTESIZE * w + BYTE(fracs[i]);
@@ -1166,7 +1181,9 @@ Toggle LASTROUNDED;
 Word fpNORM(int e, Word hi_f, Word lo_f)
 {
 	Word f55, w;
+    int cnt;
 
+    cnt = 0;
 /*N1*/ PrintNorm("N1",e,hi_f,lo_f);
 	if (CY) {
         CY = OFF;
@@ -1182,6 +1199,7 @@ N2: PrintNorm("N2",e,hi_f,lo_f);
 /*N3*/PrintNorm("N3",e,hi_f,lo_f);
 	smSLAX(&hi_f, &lo_f, hi_f, lo_f, 1, SHIFT); e--;
 	goto N2;
+    cnt = 0;
 N4: PrintNorm("N4",e,hi_f,lo_f);
     smSRAX(&hi_f, &lo_f, hi_f, lo_f, 1, ROTATE); e++;
 N5: PrintNorm("N5",e,hi_f,lo_f);
@@ -1196,17 +1214,30 @@ N5: PrintNorm("N5",e,hi_f,lo_f);
 	}
 	lo_f = 0;
 	if (CY) {
+        if (++cnt > 30) {
+            Error("N4-N5 LOOP");
+            return 0;
+        }
         lo_f = 1;
         goto N4;
 	}
 /*N6*/PrintNorm("N6",e,hi_f,lo_f);
 	if (e < 0) {
+        if (VERBOSE)
+            Warning("NORM: EXPONENT UNDERFLOW");
 		OT = ON; CI = GREATER;
+        w = SIGN(hi_f) + FP_MIN;
+        goto ErrOut;
 	} else if (e > BYTESIZE-1) {
+        if (VERBOSE)
+            Warning("NORM: EXPONENT OVERFLOW");
 		OT = ON; CI = LESS;
+        w = SIGN(hi_f) + FP_MAX;
+        goto ErrOut;
 	}
 N7: PrintNorm("N7",e,hi_f,lo_f);
     w = SIGN(hi_f) + (MAG(hi_f) DIV BYTESIZE) + (BYTE(e) << (4*6));
+ErrOut:
     PrintNorm(" W",e,w,0);
 	return w;
 }
@@ -4723,12 +4754,12 @@ Word myrand(void)
         w = SIGN(w) + (w & 07700000000U) + (w & 00000777777U) * BYTESIZE;
     }
     ASSERT(w & 00077000000U);
-    return w;
+    return SIGN(w) + MAG(w);
 }
 
 Word *TestData;
 
-void TestFPOp(char op)
+void TestFPOp(char op, int bincmp)
 {
     int i, cnt, nrounded, nfailed;
     Word u, v, w0, w1;
@@ -4740,7 +4771,8 @@ void TestFPOp(char op)
 
     LPT = stderr; waserr = OFF;
     PrintLPT("=== T E S T I N G  F P %c ===\n", op);
-    srand(314159);
+    srand(1009);
+    // srand(314159);
     fp2d = FPToDouble2;
     // NTESTS = 0;
     cnt = nfailed = nrounded = 0;
@@ -4750,14 +4782,10 @@ void TestFPOp(char op)
             u = myrand();
             v = myrand();
         } else {
-            u = TestData[2*cnt];
+            u = TestData[2*cnt    ];
             v = TestData[2*cnt + 1];
         }
-        u = SIGN(u) + MAG(u);
-        v = SIGN(v) + MAG(v);
         du = fp2d(u);
-        dv = fp2d(u);
-        //PrintLPT("%c%010o U=%.6e V=%.6e\n", PLUS(u), MAG(u), du, dv);
         dv = fp2d(v);
         switch (op) {
         case '+': dw0 = du + dv; break;
@@ -4771,11 +4799,7 @@ void TestFPOp(char op)
             dw0 = du / dv;
             break;
         }
-        dw0 = FPToDouble(w0 = RoundDoubleToFP(dw0, '/' == op));
-        if (SM_NAN == w0) {
-            N++;
-            continue;
-        }
+        w0 = RoundDoubleToFP(dw0, '/' == op);
         OT = OFF;
         switch (op) {
         case '+': w1 = fpADD(u, v); break;
@@ -4783,19 +4807,11 @@ void TestFPOp(char op)
         case '*': w1 = fpMUL(u, v); break;
         case '/':
             w1 = fpDIV(u, v);
-            if (OT) {
-                N++;
-                continue;
-            }
             break;
         }
-        dw1 = fp2d(w1);
-        sprintf(buf0, "%.5e", dw0);
-        sprintf(buf1, "%.5e", dw1);
         if ('/' == op) {
-            TestData[2*cnt] = u;
+            TestData[2*cnt    ] = u;
             TestData[2*cnt + 1] = v;
-            // PrintLPT("DU=%.5e DV=%.5e\n", du, dv);
         }
         cnt++;
         if (0 == (cnt & SM_MASK(17))) {
@@ -4807,8 +4823,17 @@ void TestFPOp(char op)
         }
         if (LASTROUNDED)
             nrounded++;
-        if (!strcmp(buf0, buf1))
-            continue;
+        if (bincmp) {
+            if (w0 == w1)
+                continue;
+        } else {
+            dw0 = fp2d(w0);
+            dw1 = fp2d(w1);
+            sprintf(buf0, "%.5e", dw0);
+            sprintf(buf1, "%.5e", dw1);
+            if (!strcmp(buf0, buf1))
+                continue;
+        }
         nfailed++;
         nl(); wprint(u); wprint(v);
         PrintLPT("%.5e %c %.5e = %.5e %.5e %.5e", du, op, dv, dw0, dw1, fabs(dw0 - dw1));
@@ -4833,15 +4858,18 @@ void TestFPOp(char op)
 
 void TestFP(void)
 {
-    TestData = (Word*)malloc(NTESTS * 2 * sizeof(Word));
+    const int bincmp = 1;
+
+    TestData = (Word*)malloc(NTESTS * 2 *sizeof(Word));
     if (NULL == TestData) {
-        Warning("TESDATA ALLOC FAILED");
+        Error("FAILED TO ALLOCATE TESTDATA");
         exit(1);
     }
-    TestFPOp('/');
-    TestFPOp('*');
-    TestFPOp('-');
-    TestFPOp('+');
+
+    TestFPOp('/', bincmp);
+    TestFPOp('*', bincmp);
+    TestFPOp('-', bincmp);
+    TestFPOp('+', bincmp);
     exit(0);
 }
 
