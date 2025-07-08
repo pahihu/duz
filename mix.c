@@ -145,6 +145,7 @@
 #include <math.h>
 
 #if defined(__linux__) || defined(__APPLE__)
+typedef unsigned long __uint64;
 #include <sys/time.h>
 unsigned CurrentMS(void)
 {
@@ -153,6 +154,7 @@ unsigned CurrentMS(void)
     return tv.tv_sec * 1000 + (tv.tv_usec + 500) / 1000;
 }
 #elif defined(WIN32)
+typedef unsigned long long __uint64;
 #include <sys/types.h>
 #include <sys/timeb.h>
 unsigned CurrentMS(void)
@@ -956,7 +958,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 #define FP_HALF     (04000000000U)
 #define FP_REPRB	(00001000000U)
 #define FP_Q		(BYTESIZE >> 1)
-#define FP_MIN      (00000000001U)
+#define FP_MIN      (00001000000U)
 #define FP_MAX      (07777777777U)
 
 /* 
@@ -979,7 +981,7 @@ double FPToDouble2(Word u)
     Word uf;
     int ue, sign;
     union {
-        unsigned long u;
+        __uint64 u;
         double d;
     } ret;
 
@@ -1016,13 +1018,13 @@ int mymod(int a, int b)
 
 Word RoundDoubleToFP(double d, int droplo)
 {
-    unsigned long frac0;
+    __uint64 frac0;
     int i, e, sign, sav;
     Word w, fract55, fract, fract_lo;
 
     union {
         double d;
-        unsigned long u;
+        __uint64 u;
     } ret;
 
     ret.d = d;
@@ -4848,7 +4850,7 @@ void TestFPOp(char op, int bincmp)
         }
         nfailed++;
         nl(); wprint(u); wprint(v);
-        PrintLPT("%.5e %c %.5e = %.5e %.5e %.5e", du, op, dv, dw0, dw1, fabs(dw0 - dw1));
+        PrintLPT("DU(%.5e) %c DV(%.5e) = W0(%.5e) W1(%.5e) %.5e", du, op, dv, dw0, dw1, fabs(dw0 - dw1));
         waserr = ON;
     }
     nl();
