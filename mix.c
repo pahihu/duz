@@ -45,6 +45,7 @@
  *  ========
  *  250708AP    binary test data compare
  *              exponent underflow/overflow handling
+ *              RoundDouble() fixes
  *  250707AP    fixed fpNORM, uDSUB, smMUL, smDIV, fpDIV
  *              saving test vectors in TestData
  *  250706AP    FADD/FMUL/FIX fixes
@@ -1011,11 +1012,13 @@ int mymod(int a, int b)
     return a - b * rat;
 }
 
+#define DOUBLE_EPSILON  ((double)1.0e-150)
+
 Word RoundDoubleToFP(double d, int droplo)
 {
-    unsigned long fract;
+    unsigned long frac0;
     int i, e, sign, sav;
-    Word fract55, fract_lo;
+    Word w, fract55, fract, fract_lo;
 
     union {
         double d;
@@ -1023,14 +1026,19 @@ Word RoundDoubleToFP(double d, int droplo)
     } ret;
 
     ret.d = d;
-    fract = ret.u & 0177777777777777777ULL; ret.u >>= 52;
+    frac0 = ret.u & 0177777777777777777ULL; ret.u >>= 52;
     e     = ret.u & 03777ULL; ret.u >>= 11;
     sign  = ret.u;
 
-    fract += 1ULL << 52;                                        /* add implicit 1.        */
-    fract_lo = fract & 037777777ULL;                            /* lower 23 bits          */
+    if (fabs(d) < DOUBLE_EPSILON) {
+        return (sign ? SM_SIGN : 0);
+    }
+
+    frac0 += 1ULL << 52;                                        /* add implicit 1.        */
+    fract_lo = frac0 & 037777777ULL;                            /* lower 23 bits          */
     fract_lo <<= 7;
-    fract >>= 23;
+    frac0 >>= 23;
+    fract = frac0;
     e -= 1023; e++;
     /* 1.xxxxx1 */
     PrintNorm("F0", e, fract, fract_lo);
@@ -1068,7 +1076,10 @@ Word RoundDoubleToFP(double d, int droplo)
         fract += 0100U;
     }
     fract = fract DIV BYTESIZE;
-    return (sign ? SM_SIGN : 0) + (e << 4*6) + fract;
+    PrintNorm("FW", e, (sign ? SM_SIGN : 0) + fract, 0);
+    w = (sign ? SM_SIGN : 0) + (e << 4*6) + fract;
+    PrintNorm("FW", e, w, 0);
+    return w;
 }
 
 double FPToDouble(Word u)
@@ -4758,6 +4769,7 @@ Word myrand(void)
 }
 
 Word *TestData;
+char *MARG[3];
 
 void TestFPOp(char op, int bincmp)
 {
@@ -4843,23 +4855,48 @@ void TestFPOp(char op, int bincmp)
     PrintLPT("  Count: #%d\n", cnt);
     PrintLPT(" Failed: #%d\n", nfailed);
     PrintLPT("Rounded: #%d\n", nrounded);
-    if (0 == NTESTS) {
-        u = SM_SIGN + 04101766600U;
-        v = 07113757507U;
-        w1 = fpDIV(u, v);
-        du = FPToDouble2(u);
-        dv = FPToDouble2(v);
-        w0 = RoundDoubleToFP(du / dv, '/' == op);
-        PrintLPT("%.5e %c %.5e = %.5e\n", du, op, dv, du / dv);
-        PrintLPT("W0=%.5e\n", FPToDouble(w0));
-        PrintLPT("W1=%.5e\n", FPToDouble(w1));
-    }
 }
 
 void TestFP(void)
 {
     const int bincmp = 1;
 
+    if (0 == NTESTS) {
+        char op;
+        Word u, v, w0, w1;
+        double du, dv, dw0;
+        char *ptr;
+
+        VERBOSE = ON;
+        op = *MARG[2];
+        u = i2w(strtol(MARG[0], &ptr, 8));
+        v = i2w(strtol(MARG[1], &ptr, 8));
+        du = FPToDouble2(u);
+        dv = FPToDouble2(v);
+        switch (op) {
+        case '+':
+            dw0 = du + dv;
+            w1 = fpADD(u, v);
+            break;
+        case '-':
+            dw0 = du - dv;
+            w1 = fpSUB(u, v);
+            break;
+        case '*':
+            dw0 = du * dv;
+            w1 = fpMUL(u, v);
+            break;
+        case '/':
+            dw0 = du / dv;
+            w1 = fpDIV(u, v);
+            break;
+        }
+        w0 = RoundDoubleToFP(dw0, '/' == op);
+        PrintLPT("DU(%.5e) %c DV(%.5e) = DW(%.5e)\n", du, op, dv, dw0);
+        PrintLPT(" FP W0=%.5e\n", FPToDouble(w0));
+        PrintLPT("MIX W1=%.5e\n", FPToDouble(w1));
+        exit(0);
+    }
     TestData = (Word*)malloc(NTESTS * 2 *sizeof(Word));
     if (NULL == TestData) {
         Error("FAILED TO ALLOCATE TESTDATA");
@@ -4878,7 +4915,7 @@ void TestFP(void)
 
 int main(int argc, char*argv[])
 {
-	int i, u;
+	int i, j, u;
 	char *arg;
     Toggle ASMONLY;
     char *asmfiles[NASMFILES];
@@ -4926,9 +4963,20 @@ int main(int argc, char*argv[])
         case 'm':
             NTESTS = 10000;
 			if (i + 1 < argc) {
-                arg = argv[i+1];
+                arg = argv[++i];
                 NTESTS = atoi(arg);
 			}
+            if (0 == NTESTS) {
+                for (j = 0; j < 3; j++) {
+                    MARG[j] = "";
+			        if (i + 1 < argc) {
+                        arg = argv[++i];
+                        MARG[j] = arg;
+			        } else {
+                        Usage();
+                    }
+                }
+            }
             TestFP();
 			continue;
         case 'p': TRANS = ON; continue;
