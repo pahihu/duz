@@ -43,6 +43,10 @@
  *
  *  History:
  *  ========
+ *  250709AP    scaled #tests input
+ *              changed failed tests formatting
+ *              RoundDouble() rounding overflow fix
+ *              fpNORM() clear CY
  *  250708AP    binary test data compare
  *              exponent underflow/overflow handling
  *              RoundDouble() fixes
@@ -146,7 +150,18 @@
 
 #if defined(__linux__) || defined(__APPLE__)
 typedef unsigned long __uint64;
+#include <sys/random.h>
 #include <sys/time.h>
+unsigned long GetRandom(void)
+{
+    return (unsigned long) random();
+}
+
+void InitRandom(unsigned seed)
+{
+    srandom(seed);
+}
+
 unsigned CurrentMS(void)
 {
     struct timeval tv;
@@ -262,7 +277,7 @@ int WaitRTI;
 Toggle CY;
 Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
-int NTESTS;
+long NTESTS;
 
 #define rA	 reg[0]
 #define rI1	 reg[1]
@@ -346,7 +361,6 @@ unsigned IX_MASK;
 #define IS_NEGATIVE(w)  (MAG(w) && SIGN(w))
 #define IS_ZERO(w)      (!MAG(w))
 #define IS_POSITIVE(w)  (MAG(w) && !SIGN(w))
-
 
 /* ===================== L O G G I N G ====================== */
 
@@ -960,6 +974,8 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 #define FP_Q		(BYTESIZE >> 1)
 #define FP_MIN      (00001000000U)
 #define FP_MAX      (07777777777U)
+#define IS_NORM(w)  ((w) & 00077000000U)
+
 
 /* 
  * Vol.2 pp. 234.
@@ -1076,6 +1092,9 @@ Word RoundDoubleToFP(double d, int droplo)
         || (FP_Q == fract55 && (0 == (fract DIV BYTESIZE) MOD 2)))
     {
         fract += 0100U;
+        if (fract > SM_WORD) {
+            fract = fract DIV BYTESIZE; e++;
+        }
     }
     fract = fract DIV BYTESIZE;
     PrintNorm("FW", e, (sign ? SM_SIGN : 0) + fract, 0);
@@ -1227,6 +1246,7 @@ N5: PrintNorm("N5",e,hi_f,lo_f);
 	}
 	lo_f = 0;
 	if (CY) {
+        CY = OFF;
         if (++cnt > 30) {
             Error("N4-N5 LOOP");
             return 0;
@@ -4753,20 +4773,20 @@ Word myrand(void)
 {
     Word w;
 
-    w = rand() & 077777U;
+    w = GetRandom() & 077777U;
     w <<= 15;
-    w += rand() & 077777U;
-    if (rand() & 1)
+    w += GetRandom() & 077777U;
+    if (GetRandom() & 1)
         w += SM_SIGN;
     if (!MAG(w))
         return w;
     while (0 == (w & 0777777U)) {
-        w += rand() & 07777U;
+        w += GetRandom() & 07777U;
     }
-    while (0 == (w & 00077000000U)) {
-        w = SIGN(w) + (w & 07700000000U) + (w & 00000777777U) * BYTESIZE;
+    while (!IS_NORM(w)) {
+        w = SIGN(w) + MSBYTE(w) + (w & 00000777777U) * BYTESIZE;
     }
-    ASSERT(w & 00077000000U);
+    ASSERT(IS_NORM(w));
     return SIGN(w) + MAG(w);
 }
 
@@ -4781,18 +4801,21 @@ void TestFPOp(char op, int bincmp)
     char buf0[32], buf1[32];
     double (*fp2d)(Word);
     Toggle waserr;
-    int N;
+    long N;
+    unsigned SRAND;
 
-    LPT = stderr; waserr = OFF;
-    PrintLPT("=== T E S T I N G  F P %c ===\n", op);
-    srand(1009);
+    waserr = OFF;
+    // srand(1009);
     // srand(314159);
+    getentropy(&SRAND, sizeof(SRAND));
+    InitRandom(SRAND);
+    Info("SRAND=%u", SRAND);
+    Info("=== T E S T I N G  F P %c ===", op);
     fp2d = FPToDouble2;
-    // NTESTS = 0;
     cnt = nfailed = nrounded = 0;
     N = NTESTS;
     for (i = 0; i < N; i++) {
-        if ('/' == op) {
+        if ('/' == op || NULL == TestData) {
             u = myrand();
             v = myrand();
         } else {
@@ -4823,7 +4846,7 @@ void TestFPOp(char op, int bincmp)
             w1 = fpDIV(u, v);
             break;
         }
-        if ('/' == op) {
+        if ('/' == op && NULL != TestData) {
             TestData[2*cnt    ] = u;
             TestData[2*cnt + 1] = v;
         }
@@ -4849,14 +4872,14 @@ void TestFPOp(char op, int bincmp)
                 continue;
         }
         nfailed++;
-        nl(); wprint(u); wprint(v);
-        PrintLPT("DU(%.5e) %c DV(%.5e) = W0(%.5e) W1(%.5e) %.5e", du, op, dv, dw0, dw1, fabs(dw0 - dw1));
+        nl(); PrintLPT("0 "); wprint(u); wprint(v);
+        PrintLPT("%c / DU(%.5e) %c DV(%.5e) = W0(%.5e) W1(%.5e) %.5e", op, du, op, dv, dw0, dw1, fabs(dw0 - dw1));
         waserr = ON;
     }
     nl();
-    PrintLPT("  Count: #%d\n", cnt);
-    PrintLPT(" Failed: #%d\n", nfailed);
-    PrintLPT("Rounded: #%d\n", nrounded);
+    Info("  Count: #%d", cnt);
+    Info(" Failed: #%d", nfailed);
+    Info("Rounded: #%d", nrounded);
 }
 
 void TestFP(void)
@@ -4899,10 +4922,16 @@ void TestFP(void)
         PrintLPT("MIX W1=%.5e\n", FPToDouble(w1));
         exit(0);
     }
-    TestData = (Word*)malloc(NTESTS * 2 *sizeof(Word));
-    if (NULL == TestData) {
-        Error("FAILED TO ALLOCATE TESTDATA");
-        exit(1);
+    TestData = NULL;
+    if (NTESTS > 0) {
+        TestData = (Word*)malloc(NTESTS * 2 *sizeof(Word));
+        if (NULL == TestData) {
+            Error("FAILED TO ALLOCATE TESTDATA");
+            exit(1);
+        }
+    } else {
+        Info("TESTDATA NOT CACHED");
+        NTESTS = -NTESTS;
     }
 
     TestFPOp('/', bincmp);
@@ -4910,6 +4939,25 @@ void TestFP(void)
     TestFPOp('-', bincmp);
     TestFPOp('+', bincmp);
     exit(0);
+}
+
+long satol(const char *s)
+{
+    int n;
+    long scale;
+    char tmp[MAX_LINE+1];
+
+    strncpy(tmp, s, MAX_LINE);
+
+    scale = 1L;
+    n = strlen(tmp);
+    switch (tmp[n-1]) {
+    case 'k': scale = 1000L; break;
+    case 'M': scale = 1000000L; break;
+    }
+    if (1L != scale)
+        tmp[n-1] = 0;
+    return scale * atol(tmp);
 }
 
 
@@ -4963,10 +5011,10 @@ int main(int argc, char*argv[])
         case 'd': DUMP = ON; continue;
         case 'l': LNKLD = ON; continue;
         case 'm':
-            NTESTS = 10000;
+            NTESTS = 10000L;
 			if (i + 1 < argc) {
                 arg = argv[++i];
-                NTESTS = atoi(arg);
+                NTESTS = satol(arg);
 			}
             if (0 == NTESTS) {
                 for (j = 0; j < 3; j++) {

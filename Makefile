@@ -17,8 +17,9 @@ fpexptab: fpexptab.o
 	$(CC) $(LDFLAGS) -o $@ fpexptab.o
 
 clean:
-	$(RM) fpexptab
+	$(RM) fpexptab fpexptab.o
 	$(RM) $(TARGET)
 	$(RM) $(OBJS)
+	$(RM) *.prn *.log *.tra *.tre
 
 # vim:set ts=4 sw=4 noet:
