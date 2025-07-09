@@ -203,3 +203,8 @@ FCMP       STJ  9F                FLOATING POINT COMPARISON SUBROUTINE:
 6H         ENTA 0
 8H         CMPA =0=               SET COMPARISON INDICATOR.
 9H         JMP  *                 EXIT FROM SUBROUTINE.
+OFLO       STJ  *+1               TURN OFF OT
+           JMP  *
+TEMP       ORIG *+1
+FIXOVFLO   HLT  4
+EPSILON    CON  128

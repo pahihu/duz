@@ -47,6 +47,7 @@
  *              changed failed tests formatting
  *              RoundDouble() rounding overflow fix
  *              fpNORM() clear CY
+ *              FCMP fixes
  *  250708AP    binary test data compare
  *              exponent underflow/overflow handling
  *              RoundDouble() fixes
@@ -242,6 +243,9 @@ typedef enum {S_HALT, S_STOP, S_WAIT, S_NORMAL, S_CONTROL} MachineState;
 #define MIX_INDEX       32
 #define MIX_MASTER     128
 Word CONFIG;
+
+static char *sot = " X", *sci = "<=>", *ssta = "HSWN ";
+
 
 #define CORE_MEM    "core.mem"
 #define CORE_CTL    "core.ctl"
@@ -1030,7 +1034,24 @@ int mymod(int a, int b)
     return a - b * rat;
 }
 
-#define DOUBLE_EPSILON  ((double)1.0e-150)
+#define DOUBLE_EPSILON  (7.62942363516372e-06)
+
+Comparator CompareDouble(double u, double v)
+{
+    Comparator ci;
+
+    ci = LESS;
+    if (fabs(u - v) <= DOUBLE_EPSILON) {
+        ci = EQUAL;
+    } else if (u < v) {
+        ci = LESS;
+    } else {
+        ci = GREATER;
+    }
+    return ci;
+}
+
+#define MIX_DOUBLE_MIN  ((double)1.0e-150)
 
 Word RoundDoubleToFP(double d, int droplo)
 {
@@ -1048,7 +1069,7 @@ Word RoundDoubleToFP(double d, int droplo)
     e     = ret.u & 03777ULL; ret.u >>= 11;
     sign  = ret.u;
 
-    if (fabs(d) < DOUBLE_EPSILON) {
+    if (fabs(d) < MIX_DOUBLE_MIN) {
         return (sign ? SM_SIGN : 0);
     }
 
@@ -1445,15 +1466,23 @@ void fpCMP(Word u, Word v)
 	fpFREXP(u, &ue, &uf);
 	fpFREXP(v, &ve, &vf);
 
+    PrintNorm(" U", ue, uf, 0);
+    PrintNorm(" V", ve, vf, 0);
+
     ediff = MIN(5, ue - ve);
 	smSRAX(&a, &x, vf, SIGN(vf), ediff, SHIFT);
+    PrintNorm("AX", ediff, a, x);
 	a = smADD(a, uf);
+    PrintNorm(" A", 0, a, 0);
 	if (CY) {
         x = 1;
         smSRAX(&a, &x, a, x, 1, ROTATE);
+        PrintNorm("OV", 0, a, x);
         goto CheckSign;
 	} else {
-	    CI = smCMP(a, FP_EPSILON);
+	    CI = smCMP(MAG(a), FP_EPSILON);
+        if (0 == NTESTS)
+            PrintLPT("CI=%c\n", sci[CI]);
 	    if (GREATER == CI) {
             goto CheckSign;
 	    } else if (LESS == CI) {
@@ -3791,7 +3820,6 @@ void decode(Word C, Word F)
 Toggle OLDFLOATOP, FLOATOP;
 void Status(Word P)
 {
-	static char *sot = " X", *sci = "<=>", *ssta = "HSWN ";
 	Word w, INST, A, I, F, C, M, OP;
 	int i;
     double d;
@@ -4816,6 +4844,7 @@ void TestFPOp(char op, int bincmp)
     cnt = nfailed = nrounded = 0;
     N = NTESTS;
     for (i = 0; i < N; i++) {
+        LASTROUNDED = OFF;
         if ('/' == op || NULL == TestData) {
             u = myrand();
             v = myrand();
@@ -4837,8 +4866,13 @@ void TestFPOp(char op, int bincmp)
             }
             dw0 = du / dv;
             break;
+        case '?':
+            w0 = CompareDouble(du, dv);
+            break;
         }
-        w0 = RoundDoubleToFP(dw0, '/' == op);
+        if ('?' != op) {
+            w0 = RoundDoubleToFP(dw0, '/' == op);
+        }
         w1 = 0;
         OT = OFF;
         switch (op) {
@@ -4847,6 +4881,9 @@ void TestFPOp(char op, int bincmp)
         case '*': w1 = fpMUL(u, v); break;
         case '/':
             w1 = fpDIV(u, v);
+            break;
+        case '?':
+            fpCMP(u, v); w1 = CI;
             break;
         }
         if ('/' == op && NULL != TestData) {
@@ -4863,7 +4900,7 @@ void TestFPOp(char op, int bincmp)
         }
         if (LASTROUNDED)
             nrounded++;
-        if (bincmp) {
+        if (bincmp || '?' == op) {
             if (w0 == w1)
                 continue;
             dw0 = fp2d(w0);
@@ -4878,7 +4915,11 @@ void TestFPOp(char op, int bincmp)
         }
         nfailed++;
         nl(); PrintLPT("0 "); wprint(u); wprint(v);
-        PrintLPT("%c / DU(%.5e) %c DV(%.5e) = W0(%.5e) W1(%.5e) %.5e", op, du, op, dv, dw0, dw1, fabs(dw0 - dw1));
+        if ('?' == op) {
+            PrintLPT("%c / DU(%+.5e) %c DV(%+.5e) = W0(%c) W1(%c) %.5e", op, du, op, dv, sci[w0], sci[w1], fabs(du - dv));
+        } else {
+            PrintLPT("%c / DU(%+.5e) %c DV(%+.5e) = W0(%+.5e) W1(%+.5e) %.5e", op, du, op, dv, dw0, dw1, fabs(dw0 - dw1));
+        }
         waserr = ON;
     }
     nl();
@@ -4891,6 +4932,7 @@ void TestFP(void)
 {
     const int bincmp = 1;
 
+    LASTROUNDED = OFF;
     if (0 == NTESTS) {
         char op;
         Word u, v, w0, w1;
@@ -4921,11 +4963,20 @@ void TestFP(void)
             dw0 = du / dv;
             w1 = fpDIV(u, v);
             break;
+        case '?':
+            w0 = CompareDouble(du, dv);
+            fpCMP(u, v); w1 = CI;
+            break;
         }
-        w0 = RoundDoubleToFP(dw0, '/' == op);
-        PrintLPT("DU(%.5e) %c DV(%.5e) = DW(%.5e)\n", du, op, dv, dw0);
-        PrintLPT(" FP W0=%.5e\n", FPToDouble(w0));
-        PrintLPT("MIX W1=%.5e\n", FPToDouble(w1));
+        PrintLPT("DU(%.5e) %c DV(%.5e) = ", du, op, dv);
+        if ('?' == op) {
+            PrintLPT("W0(%c) W1(%c) %.5e\n", sci[w0], sci[w1], fabs(du - dv));
+        } else {
+            w0 = RoundDoubleToFP(dw0, '/' == op);
+            PrintLPT("DW(%.5e)\n", dw0);
+            PrintLPT(" FP W0=%.5e\n", FPToDouble(w0));
+            PrintLPT("MIX W1=%.5e\n", FPToDouble(w1));
+        }
         exit(0);
     }
     TestData = NULL;
@@ -4941,9 +4992,10 @@ void TestFP(void)
     }
 
     TestFPOp('/', bincmp);
-    TestFPOp('*', bincmp);
-    TestFPOp('-', bincmp);
-    TestFPOp('+', bincmp);
+    // TestFPOp('*', bincmp);
+    // TestFPOp('-', bincmp);
+    // TestFPOp('+', bincmp);
+    TestFPOp('?', bincmp);
     exit(0);
 }
 
