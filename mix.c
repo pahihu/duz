@@ -1189,6 +1189,7 @@ Word DoubleToFP(double d)
             Warning("DOUBLETOFP: EXPONENT UNDERFLOW %d", eq);
         return (sign ? SM_SIGN : 0) + FP_MIN;
     }
+    w = 0;
     for (i = 0; i < 4; i++) {
         w = BYTESIZE * w + BYTE(fracs[i]);
     }
@@ -4824,6 +4825,7 @@ void TestFPOp(char op, int bincmp)
         }
         du = fp2d(u);
         dv = fp2d(v);
+        dw0 = 0.0;
         switch (op) {
         case '+': dw0 = du + dv; break;
         case '-': dw0 = du - dv; break;
@@ -4837,6 +4839,7 @@ void TestFPOp(char op, int bincmp)
             break;
         }
         w0 = RoundDoubleToFP(dw0, '/' == op);
+        w1 = 0;
         OT = OFF;
         switch (op) {
         case '+': w1 = fpADD(u, v); break;
@@ -4863,6 +4866,8 @@ void TestFPOp(char op, int bincmp)
         if (bincmp) {
             if (w0 == w1)
                 continue;
+            dw0 = fp2d(w0);
+            dw1 = fp2d(w1);
         } else {
             dw0 = fp2d(w0);
             dw1 = fp2d(w1);
@@ -4898,6 +4903,7 @@ void TestFP(void)
         v = i2w(strtol(MARG[1], &ptr, 8));
         du = FPToDouble2(u);
         dv = FPToDouble2(v);
+        dw0 = 0.0; w1 = 0;
         switch (op) {
         case '+':
             dw0 = du + dv;

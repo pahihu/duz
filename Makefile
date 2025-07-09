@@ -11,10 +11,10 @@ TARGET = mix
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(LDFLAGS) -o $@ $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lm
 
 fpexptab: fpexptab.o
-	$(CC) $(LDFLAGS) -o $@ fpexptab.o
+	$(CC) $(LDFLAGS) -o $@ fpexptab.o -lm
 
 clean:
 	$(RM) fpexptab fpexptab.o
