@@ -1,0 +1,147 @@
+*...+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8
+*LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
+*
+*
+* FP.TEST DRIVER
+*
+* INPUT ON CARDS: U, V AND THE RESULTS FOR FADD,FSUB,FMUL,FDIV,FCMP
+* IF ONE OF THE RESULTS FAILED, IT OUTPUTS THE SEQUENCE NO, AND THE RESULTS
+*
+*....1....2....3....4....5....6....7....8....9....0....1....2....3....4....5....
+*NPUTn....<-INPUT1-><-INPUT2-><--FADD--><--FSUB--><--FMUL--><--FDIV--><--FCMP-->
+*
+*
+*EQUENCENO....................12345678901234567890123456789012345678901234567890
+*
+CR         EQU  16
+CP         EQU  17
+LEN        EQU  16                BUFFER LENGTH
+BUF        ORIG *+LEN             INPUT BUFFER
+BUF1       ORIG *+LEN             OUTPUT BUFFER
+SEQNO      CON  1
+U          ORIG *+1               INPUT U, V
+V          ORIG *+1
+W          ORIG *+5               W()
+RESULT     ORIG *+5               RESULT()
+*
+           ORIG 100
+START      IN   BUF(CR)           READ CARD
+           JBUS *(CR)             WAIT FOR I/O
+           ENT3 0                 NFAILED := 0
+           LD1  BUF+1(1:1)        LOAD NO.OF INPUTS
+           DEC1 =30=              CONVERT TO NUMBER
+           J1Z  9F                ZERO? DONE
+           JMP  INPUT             LOAD INPUT DATA
+           JMP  TEST              DO TESTS
+           J3P  OUTPUT            SAVE RESULTS, IF FAILED
+           LDA  SEQNO             SEQNO := SEQNO + 1
+           ADD  1
+           STA  SEQNO
+           JMP  START
+9H         HLT  1                 DONE.
+*
+* LOAD INPUT DATA
+*
+INPUT      STJ  9F
+           ENT2 0                 RI2 := 0
+           JMP  GETNUM            GET U
+           STA  U
+           INC2 2                 INC. RI2
+           JMP  GETNUM            GET V
+           STA  V
+           ENT4 4                 SAVE W()
+1H         INC2 2                 INC. RI2
+           JMP  GETNUM            GET W
+           STA  W,4
+           J4NN 1B
+9H         JMP  *
+*
+* TEST FP.OPERATIONS
+*
+TEST       STJ  9F
+           ENT4 4                 RI4 := 4
+           JMP  LDAC              INIT ACC, DO FP.ADD
+           FADD V
+           JMP  SAVAC             SAVE RESULT, INIT ACC, DO FP.SUB
+           FSUB V
+           JMP  SAVAC
+           FMUL V                 DO FP.MUL
+           JMP  SAVAC
+           FDIV V                 DO FP.DIV
+           JMP  SAVAC
+           FCMP V                 DO FP.CMP
+           JMP  CVTCI             CONVERT CI TO -1/0/+1
+           JMP  SAVAC
+9H         JMP  *
+*
+* CONVERT CI
+*
+CVTCI      STJ  9F
+           ENTA 1
+           JG   9F
+           JE   *+2
+           DECA 1
+           DECA 1
+9H         JMP  *
+
+*
+* SAVE RESULT, RI4 INDEX TO W()/RESULT()
+*
+SAVAC      STJ  9F                SAVE RET.ADDRESS
+           LDA  ACC               LOAD FP.ACCUMULATOR
+           CMPA W,4               COMPARE WITH W()
+           JE   *+2
+           ENT3 1                 NFAILED := NFAILED + 1
+           STA  RESULT,4          SAVE TO RESULT()
+           DEC4 1                 RI4 := RI4 - 1
+LDAC       STJ  9F                ENTRY LOAD
+           LDA  U                 ACC := U
+           STA  ACC
+9H         JMP  *                 RETURN
+*
+* GET NUMBER FROM CARD
+*   RI2 - POINTER TO BUF
+*
+GETNUM     STJ  9F
+           LDA  BUF+4,2(5:5)      OVERPUNCH?
+           SUB  2F(0:2)
+           STA  TEMP(0:0)         SAVE SIGN
+           LDA  BUF+4,2           LOAD CHARS
+           LDX  BUF+5,2 
+2H         NUM  25                CONVERT
+           STA  TEMP
+           LDA  TEMP              RA := RESULT
+9H         JMP  *
+*
+* SAVE OUTPUT IF FAILED
+*
+OUTPUT     STJ  9F
+           LDA  SEQNO
+           CHAR
+           STA  BUF1
+           STX  BUF1+1
+           ENT2 6                 RI2 := 6, OUTPUT POS
+           ENT4 4                 LOOP INDEX := 4
+1H         LDA  RESULT,4
+           JMP  PUTNUM
+           DEC4 1
+           J4NN 1B
+9H         JMP  *
+*
+* PUT NUMBER ON CARD
+*
+PUTNUM     STJ  9F
+           STA  NONZERO(0:0)      SAVE SIGN
+           CHAR                   CONVERT TO CHAR
+           STA  BUF1,2
+           STX  BUF1+1,2
+           LDA  NONZERO
+           JANN 1F
+           LDA  BUF1+1,2
+           SUB  =20=
+           STA  BUF1+1,2
+1H         INC2 2
+           JBUS *(CP)             WAIT FOR I/O
+           OUT  BUF1(CP)          WRITE CARD IMAGE
+9H         JMP  *
+NONZERO    CON  1

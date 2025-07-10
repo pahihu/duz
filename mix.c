@@ -44,6 +44,7 @@
  *  History:
  *  ========
  *  250710AP    line numbers in assembly
+ *              fixed comment line output
  *  250709AP    scaled #tests input
  *              changed failed tests formatting
  *              RoundDouble() rounding overflow fix
@@ -1864,8 +1865,8 @@ IOC
 
 #define NMIXCHARS   64
 #define NASCCHARS   256
-/*		                          1         2         3         4         5         6	 */
-/*		                0123456789012345678901234567890123456789012345678901234567890123*/
+/*		                           1         2         3         4         5         6	 */
+/*		                 0123456789012345678901234567890123456789012345678901234567890123*/
 char  knuth_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
 char   stan_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
 char dec026_m2a[64+1] = " +-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ_=@^'\\?.)]<!:$*[>&;,(\"#%";
@@ -3593,6 +3594,7 @@ int Assemble(const char *line)
     Word w = 0, OLDP, A, I, F, C;
     int i, found;
     char needs[3]; /* A|W|S P L */
+    char SAV10, SAV15;
 
     if (!FF || '*' == line[0]) {
         strncpy(LINE, line, MAX_LINE);
@@ -3610,6 +3612,7 @@ int Assemble(const char *line)
     while (i && LINE[i] < 32)
         LINE[i--] = ' ';
 
+    SAV10 = LINE[10]; SAV15 = LINE[15];
     LINE[10] = 0; LINE[15] = 0;
     LOCATION = LINE;
     OP = LINE+11;
@@ -3712,7 +3715,7 @@ int Assemble(const char *line)
 Out:
     if (TRACEA)
         ShowLocalSyms("AFTER");
-    LINE[10] = ' '; LINE[15] = ' ';
+    LINE[10] = SAV10; LINE[15] = SAV15;
     if (!strncmp(LINE + 72, "        ", 8)) {
         sprintf(LINE + 72, "L%04d000", LNO);
     }
