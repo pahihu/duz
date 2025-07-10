@@ -46,6 +46,7 @@
  *  250710AP    line numbers in assembly
  *              fixed comment line output
  *              write FP test data in INPUT fmt
+ *              WIN32 random generator fixes
  *  250709AP    scaled #tests input
  *              changed failed tests formatting
  *              RoundDouble() rounding overflow fix
@@ -161,9 +162,13 @@ unsigned long GetRandom(void)
     return (unsigned long) random();
 }
 
-void InitRandom(unsigned seed)
+unsigned InitRandom(unsigned seed)
 {
+    unsigned _seed;
+
+    getentropy(&_seed, sizeof(seed));
     srandom(seed);
+    return _seed;
 }
 
 unsigned CurrentMS(void)
@@ -176,6 +181,18 @@ unsigned CurrentMS(void)
 typedef unsigned long long __uint64;
 #include <sys/types.h>
 #include <sys/timeb.h>
+
+unsigned long GetRandom(void)
+{
+    return (rand() << 15) + rand();
+}
+
+unsigned InitRandom(unsigned seed)
+{
+    srand(seed);
+    return seed;
+}
+
 unsigned CurrentMS(void)
 {
     struct _timeb tb;
@@ -196,6 +213,10 @@ unsigned CurrentMS(void)
 #if defined(NDEBUG)
 # define ASSERT(x)
 #else
+# if defined(ASSERT)
+#  define EXT_ASSERT ASSERT
+#  undef ASSERT
+# endif
 # define ASSERT(x)  __assert(__LINE__,"fun",x,""#x)
 void __assert(int lno, const char *fun, int cond, const char *expr)
 {
@@ -1484,8 +1505,9 @@ void fpCMP(Word u, Word v)
         goto CheckSign;
 	} else {
 	    CI = smCMP(MAG(a), FP_EPSILON);
-        if (0 == NTESTS)
+        if (0 == NTESTS) {
             PrintLPT("CI=%c\n", sci[CI]);
+        }
 	    if (GREATER == CI) {
             goto CheckSign;
 	    } else if (LESS == CI) {
@@ -4847,8 +4869,7 @@ void TestFPOp(char op, int bincmp)
     waserr = OFF;
     // srand(1009);
     // srand(314159);
-    getentropy(&SRAND, sizeof(SRAND));
-    InitRandom(SRAND);
+    SRAND = InitRandom(CurrentMS());
     Info("SRAND=%u", SRAND);
     Info("=== T E S T I N G  F P %c ===", op);
     fp2d = FPToDouble2;
@@ -4952,8 +4973,8 @@ void TestFP(void)
             Error("CANNOT OPEN FPTST.DEK");
             exit(1);
         }
-        getentropy(&SRAND, sizeof(SRAND));
-        InitRandom(SRAND);
+        SRAND = InitRandom(CurrentMS());
+        IGNORE_VALUE(SRAND);
         for (i = 0; i < NTESTS; i++) {
             char buf[MAX_LINE + 1];
             Word u, v, ret[7];
