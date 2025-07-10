@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *  250710AP    line numbers in assembly
  *  250709AP    scaled #tests input
  *              changed failed tests formatting
  *              RoundDouble() rounding overflow fix
@@ -2824,15 +2825,15 @@ char mnemo[5];      /* mnemonic */
 
 int LNO;            /* line no */
 char LINE[MAX_LINE + 1];  /* curr.line */
-char *LOCATION, *OP, *ADDRESS;
+const char *LOCATION, *OP, *ADDRESS;
 int CH;             /* curr.char */
-char *PLN;          /* line ptr */
+const char *PLN;    /* line ptr */
 Toggle E;           /* error? */
 char EC[4 + 1];		/* error codes */
 int NE;				/* #error codes */
 char FREF;			/* future ref. */
 Toggle FF;          /* free fmt. */
-char *stok[] = { "ERR", "LOC", "NUM", "FLT", "SYM"};
+const char *stok[] = { "ERR", "LOC", "NUM", "FLT", "SYM"};
 enum {TOK_ERR, TOK_MTY, TOK_LOC, TOK_NUM, TOK_FLT, TOK_SYM} T; /* token type */
 char S[10 + 1];     /* parsed symbol */
 Word N;             /* parsed number */
@@ -2999,7 +3000,7 @@ int AsmError(char e)
 int GetSym(void)
 {
     int i, n, d, isnum, isfloat, savn;
-    char *SBEG, *SEND;
+    const char *SBEG, *SEND;
 
     if (CH && '*' == CH) {
         NEXT();
@@ -3078,7 +3079,7 @@ int FindOp(void)
     return 0;
 }
 
-int FindSym(char *S)
+int FindSym(const char *S)
 {
     int i, found;
 
@@ -3095,7 +3096,7 @@ int FindSym(char *S)
     return found;
 }
 
-int IsLocalSym(char *s)
+int IsLocalSym(const char *s)
 {
     int ch1, ch2, ch3;
 
@@ -3105,7 +3106,7 @@ int IsLocalSym(char *s)
 
 int LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
-int DefineSymIdx(int found, char *S, Word w, Toggle defd)
+int DefineSymIdx(int found, const char *S, Word w, Toggle defd)
 {
 	Toggle islocal;
 	Word adr;
@@ -3167,7 +3168,7 @@ int DefineSymIdx(int found, char *S, Word w, Toggle defd)
     return 0;
 }
 
-int DefineSym(char *S, Word w, Toggle defd)
+int DefineSym(const char *S, Word w, Toggle defd)
 {
     int found;
 
@@ -3201,7 +3202,7 @@ int ShowLocal(int i)
     return syms[i].D;
 }
 
-void ShowLocalSyms(char *msg)
+void ShowLocalSyms(const char *msg)
 {
     int i, d;
 
@@ -3222,7 +3223,7 @@ void InitLocalSyms(void)
     InitLocals('F');
 }
 
-int localSymIdx(char *s, char typ)
+int localSymIdx(const char *s, char typ)
 {
     int x;
 
@@ -3376,7 +3377,7 @@ Word Expr(void)
 Word Apart(void)
 {
     Word v = 0;
-    char *LBEG = NULL, *LEND = NULL;
+    const char *LBEG = NULL, *LEND = NULL;
     int i;
 
     if (E) return 0;
@@ -3394,7 +3395,6 @@ Word Apart(void)
             if (LEND - LBEG <= 10) {
                 if (UNDSYM)
                     AsmError(EA_UNDSYM);
-		        *LEND = 0;
                 MemSet(S, ' ', sizeof(S)-1);
                 for (i = 0; i < LEND - LBEG; i++)
                     S[i] = LBEG[i];
@@ -3473,7 +3473,7 @@ Word Wvalue(void)
     return v;
 }
 
-char* GetWord(char *dst, char *src, int n, int alf)
+const char* GetWord(char *dst, const char *src, int n, int alf)
 {
     int i;
 
@@ -3498,7 +3498,7 @@ char* GetWord(char *dst, char *src, int n, int alf)
 #define NEEDP   needs[1]
 #define NEEDL   needs[2]
 
-void PrintList(char *needs, Word w, Word OLDP, char *line)
+void PrintList(char *needs, Word w, Word OLDP, const char *line)
 {
     int i;
     Word A, I, F, C, INST;
@@ -3588,7 +3588,7 @@ void DefineLocationSym(Word w)
         DefineSym(LOCATION, w, ON);
 }
 
-int Assemble(char *line)
+int Assemble(const char *line)
 {
     Word w = 0, OLDP, A, I, F, C;
     int i, found;
@@ -3598,7 +3598,7 @@ int Assemble(char *line)
         strncpy(LINE, line, MAX_LINE);
     } else {
         MemSet(LINE, ' ', MAX_LINE);
-        char *ptr = line;
+        const char *ptr = line;
         if (' ' != *ptr) {
             ptr = GetWord(&LINE[0], ptr, 10, 0);
         }
@@ -3610,8 +3610,7 @@ int Assemble(char *line)
     while (i && LINE[i] < 32)
         LINE[i--] = ' ';
 
-    LINE[10] = 0;
-    LINE[15] = 0;
+    LINE[10] = 0; LINE[15] = 0;
     LOCATION = LINE;
     OP = LINE+11;
     ADDRESS = LINE+16;
@@ -3680,7 +3679,6 @@ int Assemble(char *line)
                 buf[i] = cr_a2m[CH]; NEXT();
             }
             MemWrite(P, FULL, w = Pack(buf)); smINC(&P);
-            ADDRESS[5] = 0;
             NEEDAWS = 'W';
         }
         else if (!strcmp(OP, "END ")) {
@@ -3714,7 +3712,11 @@ int Assemble(char *line)
 Out:
     if (TRACEA)
         ShowLocalSyms("AFTER");
-    PrintList(needs, w, OLDP, line);
+    LINE[10] = ' '; LINE[15] = ' ';
+    if (!strncmp(LINE + 72, "        ", 8)) {
+        sprintf(LINE + 72, "L%04d000", LNO);
+    }
+    PrintList(needs, w, OLDP, LINE);
     return ON == E;
 }
 
@@ -3743,7 +3745,6 @@ int Asm(const char *nm)
     while (!feof(fd)) {
         if (!fgets(line, sizeof(line), fd))
             break;
-        LNO++;
         n = strlen(line);
         while (n && IsCRLF(line[n-1]))
             n--;
@@ -3751,6 +3752,7 @@ int Asm(const char *nm)
         failed += n ? Assemble(line) : 0;
         if (OPEND)
             break;
+        LNO++;
     }
     fclose(fd);
     Info("ASSEMBLE %s\n", failed ? "FAILED" : "DONE");
