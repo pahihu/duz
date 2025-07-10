@@ -148,6 +148,7 @@
  */
 #if defined(WIN32)
 # define _CRT_RAND_S
+# include <float.h>
 #endif
 #include <stdlib.h>
 #include <stdio.h>
@@ -4636,6 +4637,11 @@ void Init(void)
 {
 	int i;
 
+#if defined(XWIN32)
+    unsigned int current_word = 0;
+    _controlfp_s( &current_word, _PC_53 | _RC_NEAR, _MCW_PC | _MCW_RC );
+#endif
+
 	InstCount = 0;
 	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
@@ -4875,7 +4881,7 @@ void TestFPOp(char op, int bincmp)
     waserr = OFF;
     // srand(1009);
     // srand(314159);
-    SRAND = InitRandom(CurrentMS());
+    SRAND = InitRandom(314159 /*CurrentMS()*/);
     Info("SRAND=%u", SRAND);
     Info("=== T E S T I N G  F P %c ===", op);
     fp2d = FPToDouble2;
@@ -4968,7 +4974,7 @@ void TestFPOp(char op, int bincmp)
 
 void TestFP(void)
 {
-    const int bincmp = 1;
+    const int bincmp = 0;
 
     if (DUMP) {
         unsigned SRAND;

@@ -1,6 +1,6 @@
 CC = gcc
 # OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
-OPT = -g
+OPT = -g -ffloat-store -frounding-math
 CFLAGS = -Wall -pedantic $(OPT)
 LDFLAGS = $(OPT)
 SRCS = mix.c
