@@ -13,6 +13,7 @@
 *
 *EQUENCENO....................12345678901234567890123456789012345678901234567890
 *
+           ORIG 100
 CR         EQU  16
 CP         EQU  17
 LEN        EQU  16                BUFFER LENGTH
@@ -24,7 +25,6 @@ V          ORIG *+1
 W          ORIG *+5               W()
 RESULT     ORIG *+5               RESULT()
 *
-           ORIG 100
 START      IN   BUF(CR)           READ CARD
            JBUS *(CR)             WAIT FOR I/O
            ENT3 0                 NFAILED := 0
@@ -53,6 +53,7 @@ INPUT      STJ  9F
 1H         INC2 2                 INC. RI2
            JMP  GETNUM            GET W
            STA  W,4
+           DEC4 1
            J4NN 1B
 9H         JMP  *
 *
@@ -61,15 +62,15 @@ INPUT      STJ  9F
 TEST       STJ  9F
            ENT4 4                 RI4 := 4
            JMP  LDAC              INIT ACC, DO FP.ADD
-           FADD V
+           JMP  FADD
            JMP  SAVAC             SAVE RESULT, INIT ACC, DO FP.SUB
-           FSUB V
+           JMP  FSUB              DO FP.SUB
            JMP  SAVAC
-           FMUL V                 DO FP.MUL
+           JMP  FMUL              DO FP.MUL
            JMP  SAVAC
-           FDIV V                 DO FP.DIV
+           JMP  FDIV              DO FP.DIV
            JMP  SAVAC
-           FCMP V                 DO FP.CMP
+           JMP  FCMP              DO FP.CMP
            JMP  CVTCI             CONVERT CI TO -1/0/+1
            JMP  SAVAC
 9H         JMP  *
@@ -87,7 +88,15 @@ CVTCI      STJ  9F
 *
 * SAVE RESULT, RI4 INDEX TO W()/RESULT()
 *
+SAV1       CON  0
+SAV2       CON  0
+SAV3       CON  0
+SAV4       CON  0
 SAVAC      STJ  9F                SAVE RET.ADDRESS
+           LD1  SAV1
+           LD2  SAV2
+           LD3  SAV3
+           LD4  SAV4
            LDA  ACC               LOAD FP.ACCUMULATOR
            CMPA W,4               COMPARE WITH W()
            JE   *+2
@@ -97,6 +106,11 @@ SAVAC      STJ  9F                SAVE RET.ADDRESS
 LDAC       STJ  9F                ENTRY LOAD
            LDA  U                 ACC := U
            STA  ACC
+           LDA  V
+           ST1  SAV1
+           ST2  SAV2
+           ST3  SAV3
+           ST4  SAV4
 9H         JMP  *                 RETURN
 *
 * GET NUMBER FROM CARD
@@ -126,6 +140,8 @@ OUTPUT     STJ  9F
            JMP  PUTNUM
            DEC4 1
            J4NN 1B
+           JBUS *(CP)             WAIT FOR I/O
+           OUT  BUF1(CP)          WRITE CARD IMAGE
 9H         JMP  *
 *
 * PUT NUMBER ON CARD
@@ -141,7 +157,5 @@ PUTNUM     STJ  9F
            SUB  =20=
            STA  BUF1+1,2
 1H         INC2 2
-           JBUS *(CP)             WAIT FOR I/O
-           OUT  BUF1(CP)          WRITE CARD IMAGE
 9H         JMP  *
 NONZERO    CON  1
