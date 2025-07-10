@@ -45,6 +45,7 @@
  *  ========
  *  250710AP    line numbers in assembly
  *              fixed comment line output
+ *              write FP test data in INPUT fmt
  *  250709AP    scaled #tests input
  *              changed failed tests formatting
  *              RoundDouble() rounding overflow fix
@@ -4640,24 +4641,29 @@ void Usage(void)
 {
 	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprv] file1...\n");
     Print("options:\n");
-    Print("    -g [unit]  push GO button on unit (def. card reader)\n");
-    Print("    -c bcfimx  MIX config (also from MIXCONFIG env.var):\n");
-    Print("                 b - binary MIX\n");
-    Print("                 c - core memory (core.mem/core.ctl)\n");
-    Print("                 f - floating-point attachment\n");
-    Print("                 i - interrupt facility\n");
-    Print("                 m - Mixmaster\n");
-    Print("                 x - double/indirect-indexing facility\n");
+    Print("    -g [unit]      push GO button on unit (def. card reader)\n");
+    Print("    -c bcfimx      MIX config (also from MIXCONFIG env.var):\n");
+    Print("                     b - binary MIX\n");
+    Print("                     c - core memory (core.mem/core.ctl)\n");
+    Print("                     f - floating-point attachment\n");
+    Print("                     i - interrupt facility\n");
+    Print("                     m - Mixmaster\n");
+    Print("                     x - double/indirect-indexing facility\n");
     Print("\n");
-    Print("    -3         Stanford MIX/360 card codes\n");
-    Print("    -a         assemble only\n");
-    Print("    -d         dump non-zero locations\n");
-    Print("    -l         punch LNKLD cards\n");
-    Print("    -p         punch nonzero locations in TRANS fmt\n");
-    Print("    -r         free fmt MIXAL\n");
-    Print("    -s address set START address\n");
-    Print("    -t aio     enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
-    Print("    -v         verbose assembling\n");
+    Print("    -3             Stanford MIX/360 card codes\n");
+    Print("    -a             assemble only\n");
+    Print("    -d             dump non-zero locations\n");
+    Print("    -l             punch LNKLD cards\n");
+    Print("    -p             punch nonzero locations in TRANS fmt\n");
+    Print("    -r             free fmt MIXAL\n");
+    Print("    -s address     set START address\n");
+    Print("    -t aio         enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
+    Print("    -v             verbose assembling\n");
+    Print("\n");
+    Print("    -d             dump FP test data\n");
+    Print("    -m  N          run FP tests, cache test data\n");
+    Print("    -m -N          run FP tests\n");
+    Print("    -m  0 u v op   run single FP test: op(u, v) (? is FCMP)\n");
     Print("\n");
 	exit(1);
 }
@@ -4937,6 +4943,45 @@ void TestFP(void)
 {
     const int bincmp = 1;
 
+    if (DUMP) {
+        unsigned SRAND;
+        int i, j;
+
+        LPT = fopen("fptst.dek", "w+");
+        if (NULL == LPT) {
+            Error("CANNOT OPEN FPTST.DEK");
+            exit(1);
+        }
+        getentropy(&SRAND, sizeof(SRAND));
+        InitRandom(SRAND);
+        for (i = 0; i < NTESTS; i++) {
+            char buf[MAX_LINE + 1];
+            Word u, v, ret[7];
+
+            u = myrand();
+            v = myrand();
+
+            ret[0] = u;
+            ret[1] = v;
+            ret[2] = fpADD(u, v);
+            ret[3] = fpSUB(u, v);
+            ret[4] = fpMUL(u, v);
+            ret[5] = fpDIV(u, v);
+            fpCMP(u, v); ret[6] = i2w(CI - 1);
+
+            sprintf(buf, "INPUT1    ");
+            for (j = 1; j <= 7; j++) {
+                Word w = ret[j-1];
+                char *ptr = buf + 10 * j;
+                sprintf(ptr , "%010d", MAG(w));
+                OverPunch(ptr + 9, SIGN(w), MAG(w));
+            }
+            PrintLPT("%s\n", buf);
+        }
+        PrintLPT("INPUT0    %*s\n", 70, " ");
+        fclose(LPT);
+        exit(0);
+    }
     LASTROUNDED = OFF;
     if (0 == NTESTS) {
         char op;
@@ -4997,10 +5042,11 @@ void TestFP(void)
     }
 
     TestFPOp('/', bincmp);
-    // TestFPOp('*', bincmp);
-    // TestFPOp('-', bincmp);
-    // TestFPOp('+', bincmp);
+    TestFPOp('*', bincmp);
+    TestFPOp('-', bincmp);
+    TestFPOp('+', bincmp);
     TestFPOp('?', bincmp);
+
     exit(0);
 }
 
