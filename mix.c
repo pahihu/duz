@@ -146,6 +146,9 @@
  *              fixed I/O evt handling
  *
  */
+#if defined(WIN32)
+# define _CRT_RAND_S
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -182,9 +185,12 @@ typedef unsigned long long __uint64;
 #include <sys/types.h>
 #include <sys/timeb.h>
 
-unsigned long GetRandom(void)
+unsigned GetRandom(void)
 {
-    return (rand() << 15) + rand();
+    unsigned ret;
+
+    rand_s(&ret);
+    return ret;
 }
 
 unsigned InitRandom(unsigned seed)
