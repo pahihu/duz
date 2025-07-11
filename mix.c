@@ -46,6 +46,7 @@
  *  250711AP    fixed WIN32 cast to unsigned long
  *              random seed only once
  *              dump/read symbols
+ *              added TRACEIO to blkRead
  *  250710AP    line numbers in assembly
  *              fixed comment line output
  *              write FP test data in INPUT fmt
@@ -2306,6 +2307,8 @@ void blkRead(int u, Word adr, Byte *cvt)
 		    goto ErrOut;
     }
 
+    tmp[n] = 0;
+    DEV_TraceIO(u, adr, "BLKREAD BUF='%s'", tmp);
     mar = adr;
 	for (i = 0; i < Blk_size; i++) {
         Byte buf[BYTES];
