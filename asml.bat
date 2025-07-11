@@ -13,8 +13,9 @@ echo:
 
 if exist %1.prn  del/q %1.prn
 if exist %1.tra  del/q %1.tra
+if exist %1.sym  del/q %1.tra
 
-.\mix.exe -a %1.mix -p >%1.prn 2>&1
+.\mix.exe -a %1.mix -y %1.sym -p >%1.prn 2>&1
 goto end
 
 :usage

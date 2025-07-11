@@ -45,6 +45,7 @@
  *  ========
  *  250711AP    fixed WIN32 cast to unsigned long
  *              random seed only once
+ *              dump/read symbols
  *  250710AP    line numbers in assembly
  *              fixed comment line output
  *              write FP test data in INPUT fmt
@@ -305,6 +306,7 @@ int MAX_MEM;
 #define	RTC					ctlmem[ADDR_RTC]
 
 Word reg[10], *mem, *ctlmem, P;
+const char **mapsyms;
 Toggle OT;
 Comparator CI;
 Toggle TRANS, LNKLD, DUMP;
@@ -314,6 +316,7 @@ Toggle TRANS, LNKLD, DUMP;
 #define CARD_DEC029 3
 int CARDCODE;
 char TRANSNM[5+1];
+const char *SYMNM;
 
 #define TYME_BASE   6
 
@@ -343,6 +346,7 @@ void PrintNorm(const char *msg, int e, Word hi, Word lo);
 void MemWrite(Word a, int f, Word w);
 Word MemRead(Word a);
 int Stop(void);
+int StripLine(char *line);
 
 #define UNO(dev)    ((dev) - 1)
 #define DEVNO(u)    ((u) + 1)
@@ -2932,6 +2936,7 @@ Toggle UNDSYM;      /* undefined symbol */
 #define NSYMS 1500
 struct {
     char S[10+1];   /* symbol  */
+    char T;         /* type: H - local, L - location, E - equ */
     Word N;         /* value   */
     Word A;			/* loader addr */
     Toggle D;       /* defined? */
@@ -3150,7 +3155,7 @@ int IsLocalSym(const char *s)
 
 int LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
-int DefineSymIdx(int found, const char *S, Word w, Toggle defd)
+int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
 {
 	Toggle islocal;
 	Word adr;
@@ -3207,12 +3212,13 @@ int DefineSymIdx(int found, const char *S, Word w, Toggle defd)
     syms[nsyms].N = w;
     syms[nsyms].A = SM_NOADDR;
     syms[nsyms].D = defd;
+    syms[nsyms].T = typ;
     nsyms++;
     LSYM = nsyms;
     return 0;
 }
 
-int DefineSym(const char *S, Word w, Toggle defd)
+int DefineSym(const char *S, Word w, Toggle defd, char typ)
 {
     int found;
 
@@ -3222,7 +3228,7 @@ int DefineSym(const char *S, Word w, Toggle defd)
     } else {
         LSYM = found = FindSym(S);
     }
-    return DefineSymIdx(found, S, w, defd);
+    return DefineSymIdx(found, S, w, defd, typ);
 }
 
 void InitLocals(char typ)
@@ -3233,7 +3239,7 @@ void InitLocals(char typ)
     for (i = 0; i < 10; i++) {
         S[0] = '0' + i;
         S[1] = typ;
-        DefineSym(S, SM_NOADDR, OFF);
+        DefineSym(S, SM_NOADDR, OFF, 'H');
     }
 }
 
@@ -3454,7 +3460,7 @@ Word Apart(void)
                 syms[SX-1].N = P;
             } else {
                 /* future.ref */
-                DefineSym(S, P, OFF);
+                DefineSym(S, P, OFF, 'L');
                 if ('=' == S[0])
                     syms[LSYM-1].A = v;
                 v = SM_NOADDR;
@@ -3594,7 +3600,7 @@ void DefineLiterals(void)
             EC[0] = ' ';
             NEEDAWS = 'W';
             w = syms[i].A;
-            DefineSymIdx(i+1 /*syms[i].S*/, syms[i].S, P, ON);
+            DefineSymIdx(i+1 /*syms[i].S*/, syms[i].S, P, ON, 'L');
             PrintList(needs, w, P, syms[i].S);
             MemWrite(P, FULL, w); smINC(&P);
         } else if (!syms[i].D) {
@@ -3607,8 +3613,63 @@ void DefineLiterals(void)
     EC[0] = ' ';
 }
 
+void DumpSymbols(const char *path)
+{
+    int i;
+    const char *s;
+    FILE *fd, *LPTSAV;
+
+    fd = fopen(path, TXT_CREATE);
+    if (NULL == fd) {
+        Error("CANNOT OPEN %s", path);
+        exit(1);
+    }
+    LPTSAV = LPT; LPT = fd;
+
+    for (i = 0; i < nsyms; i++) {
+        s = syms[i].S;
+        if (IsLocalSym(s) || !syms[i].D)
+            continue;
+        PrintLPT("%c ", syms[i].T);
+        wprint(syms[i].N);
+        PrintLPT("%10s\n", s);
+    }
+    fclose(LPT);
+    LPT = LPTSAV;
+}
+
+void ReadSymbols(const char *path)
+{
+    FILE *fd;
+    char line[MAX_LINE + 1], *ptr, typ;
+    int n;
+    Word w;
+
+    fd = fopen(path, "rt");
+    if (NULL == fd) {
+        Error("CANNOT OPEN %s", path);
+        exit(1);
+    }
+    while (!feof(fd)) {
+        if (!fgets(line, sizeof(line), fd))
+            break;
+        n = StripLine(line);
+        if (!n || n < 13)
+            continue;
+        ptr = NULL;
+        typ = line[0];
+        w = strtol(line + 2, &ptr, 8);
+        if ('L' != typ || !RANGE(w,0,MAX_MEM))
+            continue;
+        // +1234567890 SYMBOL
+        mapsyms[w] = strdup(line + 13);
+        // PrintLPT("%c%010o %s\n", PLUS(w), MAG(w), mapsyms[w]);
+    }
+    fclose(fd);
+}
+
 int XH;
-void DefineLocationSym(Word w)
+void DefineLocationSym(Word w, char typ)
 {
     int xb, xf;
 
@@ -3623,13 +3684,13 @@ void DefineLocationSym(Word w)
             syms[xb-1].D = syms[XH-1].D;
         }
         if (SM_NOADDR != syms[xf-1].N) {
-            DefineSymIdx(xf, NULL, w, ON);
+            DefineSymIdx(xf, NULL, w, ON, 'H');
             syms[xf-1].N = SM_NOADDR;
             syms[xf-1].D = OFF;
         }
-        DefineSymIdx(XH, NULL, w, ON);
+        DefineSymIdx(XH, NULL, w, ON, 'H');
     } else
-        DefineSym(LOCATION, w, ON);
+        DefineSym(LOCATION, w, ON, typ);
 }
 
 int Assemble(const char *line)
@@ -3682,11 +3743,11 @@ int Assemble(const char *line)
     if (!strcmp(OP, "EQU ")) {
         w = Wvalue();
         if (' ' != LOCATION[0])
-            DefineLocationSym(w);
+            DefineLocationSym(w, 'E');
         NEEDAWS = 'W'; NEEDP = 0;
     } else {
         if (' ' != LOCATION[0])
-            DefineLocationSym(P);
+            DefineLocationSym(P, 'L');
         found = FindOp();
         if (found--) {
             C = opcodes[found].c0de; 
@@ -3766,6 +3827,17 @@ Out:
     return ON == E;
 }
 
+int StripLine(char *line)
+{
+    int n;
+
+    n = strlen(line);
+    while (n && IsCRLF(line[n-1]))
+        n--;
+    line[n] = 0;
+    return n;
+}
+
 int Asm(const char *nm)
 {
     char line[MAX_LINE+1], path[MAX_LINE+1];
@@ -3791,10 +3863,7 @@ int Asm(const char *nm)
     while (!feof(fd)) {
         if (!fgets(line, sizeof(line), fd))
             break;
-        n = strlen(line);
-        while (n && IsCRLF(line[n-1]))
-            n--;
-        line[n] = 0;
+        n = StripLine(line);
         failed += n ? Assemble(line) : 0;
         if (OPEND)
             break;
@@ -3872,6 +3941,7 @@ void Status(Word P)
 	int i;
     double d;
     Toggle isfix;
+    char fmt;
 	
 	INST = MemRead(P); w = MAG(INST);
 	C = BYTE(w); w /= BYTESIZE;
@@ -3895,14 +3965,15 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
     OP = M; /* 1, 2, 3, 4, 8..23, 56..53 */
     OLDFLOATOP = FLOATOP; FLOATOP=OFF;
 
-    isfix = OFF;
+    isfix = OFF; fmt = ' ';
     if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
         || RANGE(C,8,23)
         || (56 == C && 6 != F)      /*!FCMP*/
         || RANGE(C,57,63))
     {
         GetV(M, F, &OP);
-        wprint(OP);
+        fmt = 'W';
+        // wprint(OP);
     } else if ((RANGE(C,1,4) && 6 == F)  /*FADD/FSUB/FMUL/FDIV*/
         || (56 == C && 6 == F))     /*FCMP*/
     {
@@ -3915,8 +3986,19 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         FLOATOP=ON;
         isfix = ON;
     } else {
-	    xprint(OP);
-        Print("     ");
+        fmt = 'X';
+	    // xprint(OP);
+        // Print("     ");
+    }
+    if ('X' == fmt && RANGE(OP,0,MAX_MEM) && mapsyms[OP]) {
+        PrintLPT(mapsyms[OP]); space();
+    } else {
+        if ('W' == fmt) {
+            wprint(OP);
+        } else {
+	        xprint(OP);
+            Print("     ");
+        }
     }
     if (OLDFLOATOP || FLOATOP) dprint(FPToDouble(rA));
 	else wprint(rA);
@@ -4538,12 +4620,14 @@ void InitMemory(void)
     }
     mem  = malloc((MAX_MEM + 3) * sizeof(Word));
     freq = malloc((MAX_MEM + 3) * sizeof(unsigned short));
+    mapsyms = malloc((MAX_MEM + 3) * sizeof(char*));
     devs = malloc(MAX_DEVS * sizeof(Device));
-    if (NULL == mem || NULL == freq || NULL == devs) {
+    if (!mem || !freq || !devs || !mapsyms) {
         goto ErrOut;
     }
 	for (i = 0; i < MAX_MEM + 3; i++) {
 		mem[i] = freq[i] = 0;
+        mapsyms[i] = NULL;
 	}
 	return;
 ErrOut:
@@ -4615,6 +4699,7 @@ void InitOptions(void)
     XEQTING = OFF;
     FF = OFF;
     CARDCODE = CARD_MIX;
+    SYMNM = NULL;
 }
 
 void InitConfig(const char *arg)
@@ -4701,6 +4786,7 @@ void Usage(void)
     Print("    -s address     set START address\n");
     Print("    -t aio         enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
     Print("    -v             verbose assembling\n");
+    Print("    -y symfile     specify symbol file (write/read)\n");
     Print("\n");
     Print("    -d             dump FP test data\n");
     Print("    -m  N          run FP tests, cache test data\n");
@@ -5191,6 +5277,12 @@ int main(int argc, char*argv[])
 			}
 			break;
         case 'v': VERBOSE = ON; break;
+        case 'y':
+            if (i + 1 < argc) {
+                SYMNM = argv[++i];
+                continue;
+            }
+            break;
 		}
 		Usage();
 	}
@@ -5204,6 +5296,12 @@ int main(int argc, char*argv[])
 	    Asm(arg);
         arg = strchr(TRANSNM, '.');
         if (arg) *arg = 0;
+    }
+    if (SYMNM) {
+        if (nasmfiles)
+            DumpSymbols(SYMNM);
+        else
+            ReadSymbols(SYMNM);
     }
 
     if (SM_NAN == START)

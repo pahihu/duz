@@ -16,9 +16,13 @@
            ORIG 100
 CR         EQU  16
 CP         EQU  17
+TT         EQU  19
 LEN        EQU  16                BUFFER LENGTH
 BUF        ORIG *+LEN             INPUT BUFFER
 BUF1       ORIG *+LEN             OUTPUT BUFFER
+MSG        ALF  SEQNO             TTY BUFFER
+           ALF  :    
+           ORIG *+12
 SEQNO      CON  1
 U          ORIG *+1               INPUT U, V
 V          ORIG *+1
@@ -31,6 +35,8 @@ START      IN   BUF(CR)           READ CARD
            LD1  BUF+1(1:1)        LOAD NO.OF INPUTS
            DEC1 =30=              CONVERT TO NUMBER
            J1Z  9F                ZERO? DONE
+           LDA  SEQNO             PRINT SEQNO
+           JMP  WTO
            JMP  INPUT             LOAD INPUT DATA
            JMP  TEST              DO TESTS
            J3P  OUTPUT            SAVE RESULTS, IF FAILED
@@ -39,6 +45,16 @@ START      IN   BUF(CR)           READ CARD
            STA  SEQNO
            JMP  START
 9H         HLT  1                 DONE.
+*
+* WTO - PRINT MSG TO TELETYPE
+*
+WTO        STJ  9F
+           CHAR
+           JBUS *(TT)
+           STA  MSG+2
+           STX  MSG+3
+           OUT  MSG(TT)
+9H         JMP  *
 *
 * LOAD INPUT DATA
 *
