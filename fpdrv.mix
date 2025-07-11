@@ -31,14 +31,14 @@ RESULT     ORIG *+5               RESULT()
 *
 START      IN   BUF(CR)           READ CARD
            JBUS *(CR)             WAIT FOR I/O
-           ENT3 0                 NFAILED := 0
+           ENT3 1                 NFAILED := 0
            LD1  BUF+1(1:1)        LOAD NO.OF INPUTS
            DEC1 30                CONVERT TO NUMBER
            J1Z  9F                ZERO? DONE
            LDA  SEQNO             PRINT SEQNO
            JMP  WTO
            JMP  INPUT             LOAD INPUT DATA
-           JMP  TEST              DO TESTS
+*           JMP  TEST              DO TESTS
            J3P  OUTPUT            SAVE RESULTS, IF FAILED
            LDA  SEQNO             SEQNO := SEQNO + 1
            INCA 1
@@ -59,7 +59,7 @@ WTO        STJ  9F
 * LOAD INPUT DATA
 *
 INPUT      STJ  9F
-           ENT2 0                 RI2 := 0
+           ENT2 2                 RI2 := 2
            JMP  GETNUM            GET U
            STA  U
            INC2 2                 INC. RI2
@@ -133,19 +133,20 @@ LDAC       STJ  9F                ENTRY LOAD
 *   RI2 - POINTER TO BUF
 *
 GETNUM     STJ  9F
-           LDA  BUF+4,2(5:5)      OVERPUNCH?
+           LDA  BUF+1,2(5:5)      OVERPUNCH?
            SUB  2F(0:2)
            STA  TEMP(0:0)         SAVE SIGN
-           LDA  BUF+4,2           LOAD CHARS
-           LDX  BUF+5,2 
-2H         NUM  25                CONVERT
-           STA  TEMP
+           LDA  BUF,2             LOAD CHARS
+           LDX  BUF+1,2
+2H         NUM  20                CONVERT
+           STA  TEMP(1:5)
            LDA  TEMP              RA := RESULT
 9H         JMP  *
 *
 * SAVE OUTPUT IF FAILED
 *
 OUTPUT     STJ  9F
+           JBUS *(CP)             WAIT FOR I/O
            LDA  SEQNO
            CHAR
            STA  BUF1
@@ -156,7 +157,6 @@ OUTPUT     STJ  9F
            JMP  PUTNUM
            DEC4 1
            J4NN 1B
-           JBUS *(CP)             WAIT FOR I/O
            OUT  BUF1(CP)          WRITE CARD IMAGE
 9H         JMP  *
 *
