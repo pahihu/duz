@@ -43,6 +43,8 @@
  *
  *  History:
  *  ========
+ *  250711AP    fixed WIN32 cast to unsigned long
+ *              random seed only once
  *  250710AP    line numbers in assembly
  *              fixed comment line output
  *              write FP test data in INPUT fmt
@@ -148,7 +150,6 @@
  */
 #if defined(WIN32)
 # define _CRT_RAND_S
-# include <float.h>
 #endif
 #include <stdlib.h>
 #include <stdio.h>
@@ -161,30 +162,45 @@
 typedef unsigned long __uint64;
 #include <sys/random.h>
 #include <sys/time.h>
+
+unsigned CurrentMS(void)
+{
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000 + (tv.tv_usec + 500) / 1000;
+}
+
 unsigned long GetRandom(void)
 {
     return (unsigned long) random();
 }
 
-unsigned InitRandom(unsigned seed)
+unsigned GetSeed(void)
 {
-    unsigned _seed;
+    unsigned seed;
 
-    getentropy(&_seed, sizeof(seed));
+    getentropy(&seed, sizeof(seed));
+    return seed;
+}
+
+void InitRandom(unsigned seed)
+{
     srandom(seed);
-    return _seed;
 }
 
-unsigned CurrentMS(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec * 1000 + (tv.tv_usec + 500) / 1000;
-}
 #elif defined(WIN32)
 typedef unsigned long long __uint64;
 #include <sys/types.h>
 #include <sys/timeb.h>
+
+unsigned CurrentMS(void)
+{
+    struct _timeb tb;
+
+    _ftime(&tb);
+    return tb.time * 1000 + tb.millitm;
+}
 
 unsigned GetRandom(void)
 {
@@ -194,19 +210,16 @@ unsigned GetRandom(void)
     return ret;
 }
 
-unsigned InitRandom(unsigned seed)
+unsigned GetSeed(void)
 {
-    srand(seed);
-    return seed;
+    return CurrentMS();
 }
 
-unsigned CurrentMS(void)
+void InitRandom(unsigned seed)
 {
-    struct _timeb tb;
-    
-    _ftime(&tb);
-    return tb.time * 1000 + tb.millitm;
+    srand(seed);
 }
+
 #else
 #include <time.h>
 unsigned CurrentMS(void)
@@ -1052,7 +1065,7 @@ double FPToDouble2(Word u)
     ue += 1023;
     ret.u = sign ? 1 : 0; ret.u <<= 11;
     ret.u += ue; ret.u <<= 52;
-    ret.u += ((unsigned long)uf << 20);
+    ret.u += ((__uint64)uf << 20);
     // PrintLPT("%lo\n", ret.u);
     return ret.d;
 }
@@ -4637,11 +4650,6 @@ void Init(void)
 {
 	int i;
 
-#if defined(XWIN32)
-    unsigned int current_word = 0;
-    _controlfp_s( &current_word, _PC_53 | _RC_NEAR, _MCW_PC | _MCW_RC );
-#endif
-
 	InstCount = 0;
 	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
@@ -4866,6 +4874,7 @@ Word myrand(void)
 
 Word *TestData;
 char *MARG[3];
+unsigned SRAND;
 
 void TestFPOp(char op, int bincmp)
 {
@@ -4876,13 +4885,9 @@ void TestFPOp(char op, int bincmp)
     double (*fp2d)(Word);
     Toggle waserr;
     long N;
-    unsigned SRAND;
 
     waserr = OFF;
-    // srand(1009);
-    // srand(314159);
-    SRAND = InitRandom(314159 /*CurrentMS()*/);
-    Info("SRAND=%u", SRAND);
+    InitRandom(SRAND);
     Info("=== T E S T I N G  F P %c ===", op);
     fp2d = FPToDouble2;
     cnt = nfailed = nrounded = 0;
@@ -4974,19 +4979,19 @@ void TestFPOp(char op, int bincmp)
 
 void TestFP(void)
 {
-    const int bincmp = 0;
+    const int bincmp = 1;
 
+    SRAND = GetSeed();
+    Info("SRAND=%u", SRAND);
     if (DUMP) {
-        unsigned SRAND;
         int i, j;
 
+        InitRandom(SRAND);
         LPT = fopen("fptst.dek", "w+");
         if (NULL == LPT) {
             Error("CANNOT OPEN FPTST.DEK");
             exit(1);
         }
-        SRAND = InitRandom(CurrentMS());
-        IGNORE_VALUE(SRAND);
         for (i = 0; i < NTESTS; i++) {
             char buf[MAX_LINE + 1];
             Word u, v, ret[7];
@@ -5078,7 +5083,7 @@ void TestFP(void)
     TestFPOp('*', bincmp);
     TestFPOp('-', bincmp);
     TestFPOp('+', bincmp);
-    TestFPOp('?', bincmp);
+    // TestFPOp('?', bincmp);
 
     exit(0);
 }

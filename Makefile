@@ -1,7 +1,9 @@
 CC = gcc
-# OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
-OPT = -g -ffloat-store -frounding-math
-CFLAGS = -Wall -pedantic $(OPT)
+OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
+# OPT = -g
+# MATH = -ffloat-store -frounding-math
+MATH = -frounding-math
+CFLAGS = -Wall -pedantic $(OPT) $(MATH)
 LDFLAGS = $(OPT)
 SRCS = mix.c
 OBJS = $(SRCS:.c=.o)
