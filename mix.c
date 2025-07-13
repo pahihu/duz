@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *  250713AP    reuse literal constants option
  *  250711AP    fixed WIN32 cast to unsigned long
  *              random seed only once
  *              dump/read symbols
@@ -330,6 +331,7 @@ Toggle CY;
 Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
 long NTESTS;
+Toggle ZLITERALS;
 
 #define rA	 reg[0]
 #define rI1	 reg[1]
@@ -3148,6 +3150,23 @@ int FindSym(const char *S)
     return found;
 }
 
+int FindSymByA(Word w)
+{
+    int i, found;
+
+    found = 0;
+    for (i = 0; i < nsyms; i++) {
+        if ('=' == syms[i].S[0] && w == syms[i].A) {
+            found = i + 1;
+            break;
+        }
+    }
+    TraceA("    FIND.SYM=%d RESULT=%d", w2i(w), found);
+    if (found)
+        TraceA("    A=%d D=%s", w2i(syms[found-1].A), ONOFF(syms[found-1].D));
+    return found;
+}
+
 int IsLocalSym(const char *s)
 {
     int ch1, ch2, ch3;
@@ -3452,7 +3471,7 @@ Word Apart(void)
                 for (i = 0; i < LEND - LBEG; i++)
                     S[i] = LBEG[i];
                 TraceA("    LIT='%s' V=%c%010o", S, PLUS(v), MAG(v));
-                UNDSYM = ON; SX = 0;
+                UNDSYM = ON; SX = ZLITERALS ? FindSymByA(v) : 0;
 	        } else
 	        	AsmError(EA_MAXLEN);
 	    }
@@ -4703,6 +4722,7 @@ void InitOptions(void)
     FF = OFF;
     CARDCODE = CARD_MIX;
     SYMNM = NULL;
+    ZLITERALS = OFF;
 }
 
 void InitConfig(const char *arg)
@@ -4769,7 +4789,7 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprv] file1...\n");
+	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprvz][-y symfile] file1...\n");
     Print("options:\n");
     Print("    -g [unit]      push GO button on unit (def. card reader)\n");
     Print("    -c bcfimx      MIX config (also from MIXCONFIG env.var):\n");
@@ -4790,6 +4810,7 @@ void Usage(void)
     Print("    -t aio         enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
     Print("    -v             verbose assembling\n");
     Print("    -y symfile     specify symbol file (write/read)\n");
+    Print("    -z             reuse literal constants\n");
     Print("\n");
     Print("    -d             dump FP test data\n");
     Print("    -m  N          run FP tests, cache test data\n");
@@ -5279,13 +5300,14 @@ int main(int argc, char*argv[])
                 continue;
 			}
 			break;
-        case 'v': VERBOSE = ON; break;
+        case 'v': VERBOSE = ON; continue;
         case 'y':
             if (i + 1 < argc) {
                 SYMNM = argv[++i];
                 continue;
             }
             break;
+		case 'z': ZLITERALS = ON; continue;
 		}
 		Usage();
 	}

@@ -34,6 +34,10 @@ START      LDA  F10
            STA  APPROX2
            FSUB APPROX1
            STA  DIFF
+           LDA  =3=
+           STA  DIFF
+           LDA  =3=
+           ADD  =3=
            HLT  *
 F10        CON  +1.0
 F13        CON  1.3
