@@ -76,12 +76,13 @@ N7         ENTX 0,2               N7. PACK. RX := E.
 ZRO        DEC2 BYTE              RI2 := E - B.                                 
 8H         STA  ACC                                                             
 EXITF      J2N  *                 EXIT, UNLESS E >= B.                          
-EXPOV      LDA  WM1               EXPONENT OVERFLOW DETECTED
+EXPOV      LDX  WM1(1:5)          EXPONENT OVERFLOW DETECTED
            JMP  *+2
-EXPUN      LDA  FPMIN             EXPONENT UNDERFLOW DETECTED                   
+EXPUN      LDX  FPMIN(1:5)        EXPONENT UNDERFLOW DETECTED
+           SLAX 5
            STA  ACC
            LDA  EXITF(0:2)
-           STJ  *+1
+           STA  *+1(0:2)
            JMP  *
 ACC        CON  0                 FLOATING POINT ACCUMULATOR                    
 *                                                                               

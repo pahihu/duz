@@ -31,14 +31,14 @@ RESULT     ORIG *+5               RESULT()
 *
 START      IN   BUF(CR)           READ CARD
            JBUS *(CR)             WAIT FOR I/O
-           ENT3 1                 NFAILED := 0
+           ENT3 0                 NFAILED := 0
            LD1  BUF+1(1:1)        LOAD NO.OF INPUTS
            DEC1 30                CONVERT TO NUMBER
            J1Z  9F                ZERO? DONE
            LDA  SEQNO             PRINT SEQNO
            JMP  WTO
            JMP  INPUT             LOAD INPUT DATA
-*           JMP  TEST              DO TESTS
+           JMP  TEST              DO TESTS
            J3P  OUTPUT            SAVE RESULTS, IF FAILED
            LDA  SEQNO             SEQNO := SEQNO + 1
            INCA 1
@@ -88,6 +88,7 @@ TEST       STJ  9F
            JMP  SAVAC
            JMP  FCMP              DO FP.CMP
            JMP  CVTCI             CONVERT CI TO -1/0/+1
+           STA  ACC               NB. WE STORE THE RESULT IN ACC!
            JMP  SAVAC
 9H         JMP  *
 *
@@ -108,19 +109,25 @@ SAV1       CON  0
 SAV2       CON  0
 SAV3       CON  0
 SAV4       CON  0
+XACC       CON  0                 XLATED ACC
+LDAC       STJ  9F                ENTRY LOAD
+           JMP  8F
 SAVAC      STJ  9F                SAVE RET.ADDRESS
            LD1  SAV1
            LD2  SAV2
            LD3  SAV3
            LD4  SAV4
-           LDA  ACC               LOAD FP.ACCUMULATOR
-           CMPA W,4               COMPARE WITH W()
+           LDA  ACC               RA := ACC
+           JMP  XLATE             CONVERT IT
+           STA  XACC              SAVE
+           LDA  W,4
+           JMP  XLATE
+           CMPA XACC
            JE   *+2
-           ENT3 1                 NFAILED := NFAILED + 1
+           INC3 1                 NFAILED := NFAILED + 1
            STA  RESULT,4          SAVE TO RESULT()
            DEC4 1                 RI4 := RI4 - 1
-LDAC       STJ  9F                ENTRY LOAD
-           LDA  U                 ACC := U
+8H         LDA  U                 ACC := U
            STA  ACC
            LDA  V
            ST1  SAV1
@@ -128,6 +135,15 @@ LDAC       STJ  9F                ENTRY LOAD
            ST3  SAV3
            ST4  SAV4
 9H         JMP  *                 RETURN
+*
+* CONVERT +-0 TO NONZERO WITH SAME SIGN
+*
+XLATE      STJ  9F
+           CMPA =0=
+           JNE  9F                NOT ZERO? DONE.
+           LDX  1                 RX := 1
+           SRC  1                 RA := SIGN(RA) + 1(1:1)
+9H         JMP  *
 *
 * GET NUMBER FROM CARD
 *   RI2 - POINTER TO BUF
@@ -169,9 +185,9 @@ PUTNUM     STJ  9F
            STX  BUF1+1,2
            LDA  NONZERO
            JANN 1F
-           LDA  BUF1+1,2
+           LDA  BUF1+1,2(1:5)
            SUB  =20=
-           STA  BUF1+1,2
+           STA  BUF1+1,2(1:5)
 1H         INC2 2
 9H         JMP  *
 NONZERO    CON  1

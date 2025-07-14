@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *  250714AP    fix smCMP (+0 = -0)
  *  250713AP    reuse literal constants option
  *  250711AP    fixed WIN32 cast to unsigned long
  *              random seed only once
@@ -787,7 +788,9 @@ Comparator smCMP(Word x, Word y)
 {
     Comparator ret;
 
-    if (SIGN(x) == SIGN(y)) {
+    if (!MAG(x) && !MAG(y)) {
+        ret = EQUAL;
+    } else if (SIGN(x) == SIGN(y)) {
         if (MAG(x) > MAG(y)) {
             ret = SIGN(x) ? LESS : GREATER;
         } else if (MAG(x) < MAG(y)) {
@@ -4082,7 +4085,7 @@ Word ConvertChar(Word *pw, Word a)
 	Word w;
 	
 	w = 0; scale = 0;
-	for (i = 0; i < 5; i++) {
+	for (i = 0; i < BYTES; i++) {
 		d = 30 + (a % 10); a /= 10;
 		w |= (d << scale);
 		scale += 6;
