@@ -46,6 +46,7 @@
  *  250715AP    fixed fpDIV(): need remainder in RX
  *              maintenance mode: number input in octal and 11-punch decimal
  *              always clear CY in fpADD()
+ *				fixed TIMER wrap around
  *  250714AP    fixed smCMP (+0 = -0)
  *  250713AP    reuse literal constants option
  *  250711AP    fixed WIN32 cast to unsigned long
@@ -326,8 +327,12 @@ const char *SYMNM;
 
 #define TYME_BASE   6
 
+// typedef struct { __uint64 t; } TymeT;
+typedef unsigned TymeT;
+
 FILE *LPT;
-unsigned Tyme, IdleTyme, InstCount, TraceCount, ElapsedMS;
+TymeT Tyme, IdleTyme;
+unsigned InstCount, TraceCount, ElapsedMS;
 unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 int WaitRTI;
@@ -1777,11 +1782,16 @@ int CheckFetch(Word a)
     return 0;
 }
 
+void IncTIMER(unsigned diff)
+{
+	TIMER += diff; TIMER &= SM_WORD;
+}
+
 Word MemRead(Word a)
 {
     Word signA;
 
-	Tyme++; TIMER++;
+	Tyme++; IncTIMER(1);
     signA = SIGN(a); a = MAG(a);
 	return signA ? ctlmem[a] : mem[a];
 }
@@ -1822,7 +1832,7 @@ void MemWrite(Word a, int f, Word w)
 {
     Word signA;
 
-    Tyme++; TIMER++;
+    Tyme++; IncTIMER(1);
     signA = SIGN(a); a = MAG(a);
     if (signA) {
         ctlmem[a] = WriteField(ctlmem[a], f, w);
@@ -1964,6 +1974,9 @@ Byte a2m[256], cr_a2m[256];
  *  10cps, 1000 feet, 10cpi
  *
  */
+
+#define DT_STUCK    ((unsigned)-1)
+
 
 #define CARD_READER  16
 #define MAX_WORD_BLOCK  100
@@ -2226,8 +2239,6 @@ void UnPack(Word w, Byte *buf)
 		w /= BYTESIZE;
 	}
 }
-
-#define DT_STUCK    ((unsigned)-1)
 
 void devError(int u)
 {
@@ -4191,7 +4202,7 @@ int Step(void)
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpADD(rA, MemRead(M));
-    	    Tyme += 2; TIMER += 2;
+			Tyme += 2; IncTIMER(2);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -4208,7 +4219,7 @@ int Step(void)
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpSUB(rA, MemRead(M));
-    	    Tyme += 2; TIMER += 2;
+			Tyme += 2; IncTIMER(2);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
@@ -4223,13 +4234,13 @@ int Step(void)
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpMUL(rA, MemRead(M));
-    	    Tyme += 7; TIMER += 7;
+			Tyme += 7; IncTIMER(7);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
             }
     		smMUL(&rA, &rX, rA, w);
-    		Tyme += 8; TIMER += 8;
+			Tyme += 8; IncTIMER(8);
 		}
 		break;
 	case 4: /*DIV*/
@@ -4239,13 +4250,13 @@ int Step(void)
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpDIV(rA, MemRead(M));
-    	    Tyme += 9; TIMER += 9;
+			Tyme += 9; IncTIMER(9);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
             }
     		smDIV(&rA, &rX, rA, rX, w);
-    		Tyme += 10; TIMER += 10;
+			Tyme += 10; IncTIMER(10);
 		}
 		break;
 	case 5:
@@ -4281,13 +4292,13 @@ int Step(void)
                 if (CheckFloatOption())
                     return 1;
                 rA = fpFLOT(rA);
-                Tyme += 2; TIMER += 2;
+                Tyme += 2; IncTIMER(2);
                 break;
             case  7: /*FIX*/
                 if (CheckFloatOption())
                     return 1;
                 rA = fpFIX(rA);
-                Tyme += 2; TIMER += 2;
+                Tyme += 2; IncTIMER(2);
                 break;
             case  8: /*NEG*/
                 if (CheckBinaryOption())
@@ -4519,7 +4530,7 @@ int Step(void)
     	    if (CheckFloatOption())
     	        return 1;
             fpCMP(rA, MemRead(M));
-    	    Tyme += 2; TIMER += 2;
+			Tyme += 2; IncTIMER(2);
 	    } else {
             if (GetV(M, F, &w)) {
                 return 1;
