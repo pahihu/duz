@@ -4,6 +4,7 @@ mix
 *.prn
 *.tre
 *.tra
+*.sym
 core.mem
 core.ctl
 *~
