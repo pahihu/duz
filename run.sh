@@ -10,7 +10,7 @@ cat fpdrv.mix fplib.mix end.mix >a.mix
 ./asml a
 if [ ! -s fptst.dek ];
 then
-  ./mix -d -m 3000
+  ./mix -d -m
 fi
 cat cardload.dek a.tra fptst.dek >reader
 if [ $trace -ne 0 ];
