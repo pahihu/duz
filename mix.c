@@ -43,7 +43,10 @@
  *
  *  History:
  *  ========
- *  250714AP    fix smCMP (+0 = -0)
+ *  250715AP    fixed fpDIV(): need remainder in RX
+ *              maintenance mode: number input in octal and 11-punch decimal
+ *              always clear CY in fpADD()
+ *  250714AP    fixed smCMP (+0 = -0)
  *  250713AP    reuse literal constants option
  *  250711AP    fixed WIN32 cast to unsigned long
  *              random seed only once
@@ -1107,7 +1110,7 @@ Comparator CompareDouble(double u, double v)
 
 #define MIX_DOUBLE_MIN  ((double)1.0e-150)
 
-Word RoundDoubleToFP(double d, int droplo)
+Word RoundDoubleToFP(double d)
 {
     __uint64 frac0;
     int i, e, sign, sav;
@@ -1146,10 +1149,6 @@ Word RoundDoubleToFP(double d, int droplo)
         }
     }
     PrintNorm("FE", e, fract, fract_lo);
-    if (droplo) {
-        PrintNorm(" F", e, fract, fract_lo);
-        fract_lo = 0;
-    }
     ASSERT(0 == mymod(e, 6));
     e = e DIV 6 + FP_Q;
     if (e < 0) {
@@ -1413,6 +1412,7 @@ Word fpADD(Word u, Word v)
 	Word w;
 
     hi_wf = 0;
+    CY = OFF;
 
 /*A1.A2*/
 	if (MAG(u) < MAG(v))
@@ -1474,11 +1474,11 @@ Word fpDIV(Word u, Word v)
 {
 	Word uf, vf;
 	int ue, ve, we;
-	Word hi_wf;
+	Word hi_wf, lo_wf;
     Word hi_uf, lo_uf;
-	Word re, w;
+	Word w;
 
-    hi_wf = 0;
+    hi_wf = lo_wf = 0;
     hi_uf = lo_uf = 0;
 	
 	fpFREXP(u, &ue, &uf);
@@ -1494,10 +1494,10 @@ Word fpDIV(Word u, Word v)
         smSRAX(&hi_uf, NULL, uf, 0, 1, SHIFT); we++;
     }
     PrintNorm(" U", 0, hi_uf, lo_uf);
-    smDIV(&hi_wf, &re, hi_uf, lo_uf, vf);
-    PrintNorm(" W", 0, hi_wf, re);
+    smDIV(&hi_wf, &lo_wf, hi_uf, lo_uf, vf);
+    PrintNorm(" W", 0, hi_wf, lo_wf);
 
-    w = fpNORM(we, hi_wf, 0);
+    w = fpNORM(we, hi_wf, lo_wf);
     return w;
 }
 
@@ -5033,7 +5033,7 @@ void TestFPOp(char op, int bincmp)
             break;
         }
         if ('?' != op) {
-            w0 = RoundDoubleToFP(dw0, '/' == op);
+            w0 = RoundDoubleToFP(dw0);
         }
         w1 = 0;
         OT = OFF;
@@ -5090,6 +5090,41 @@ void TestFPOp(char op, int bincmp)
     Info("Rounded: #%d", nrounded);
 }
 
+/* +/-1234567890 octal */
+/* 123456789_    decimal, 11-punch */
+Word StrToW(const char *s)
+{
+    char tmp[MAX_LINE + 1], *ptr;
+    long w;
+    int sign, base;
+
+    strcpy(tmp, s);
+    sign = 0; base = 8;
+    if ('+' == *tmp || '-' == *tmp) {
+        base = 8;
+    } else if (10 == strlen(tmp)) {
+        ptr = strchr("0123456789~JKLMNOPQR", tmp[9]);
+        if (ptr && !IsDigit(*ptr)) {
+            sign = 1; tmp[9] = *(ptr - 10);
+        }
+        base = 10;
+    } else {
+        Error("UNKNOWN NUMBER FORMAT '%s'", s);
+        return SM_SIGN + SM_WORD;
+    }
+    w = strtol(&tmp[0], &ptr, base);
+    return (SM_WORD & w) + (sign ? SM_SIGN : 0);
+}
+
+void utoa(char *buf, int len, unsigned u)
+{
+    int i;
+
+    for (i = len-1; i >= 0; i--) {
+        buf[i] = u % 10 + '0'; u /= 10;
+    }
+}
+
 void TestFP(void)
 {
     const int bincmp = 1;
@@ -5124,9 +5159,11 @@ void TestFP(void)
             for (j = 1; j <= 7; j++) {
                 Word w = ret[j-1];
                 char *ptr = buf + 10 * j;
-                sprintf(ptr , "%010d", MAG(w));
+                // sprintf(ptr , "%010d", MAG(w));
+                utoa(ptr, 10, MAG(w));
                 OverPunch(ptr + 9, SIGN(w), MAG(w));
             }
+            buf[MAX_LINE] = 0;
             PrintLPT("%s\n", buf);
         }
         PrintLPT("INPUT0    %*s\n", 70, " ");
@@ -5138,12 +5175,11 @@ void TestFP(void)
         char op;
         Word u, v, w0, w1;
         double du, dv, dw0;
-        char *ptr;
 
         VERBOSE = ON;
         op = *MARG[2];
-        u = i2w(strtol(MARG[0], &ptr, 8));
-        v = i2w(strtol(MARG[1], &ptr, 8));
+        u = StrToW(MARG[0]);
+        v = StrToW(MARG[1]);
         du = FPToDouble2(u);
         dv = FPToDouble2(v);
         dw0 = 0.0; w1 = 0;
@@ -5173,7 +5209,7 @@ void TestFP(void)
         if ('?' == op) {
             PrintLPT("W0(%c) W1(%c) %.5e\n", sci[w0], sci[w1], fabs(du - dv));
         } else {
-            w0 = RoundDoubleToFP(dw0, '/' == op);
+            w0 = RoundDoubleToFP(dw0);
             PrintLPT("DW(%.5e)\n", dw0);
             PrintLPT(" FP W0=%.5e\n", FPToDouble(w0));
             PrintLPT("MIX W1=%.5e\n", FPToDouble(w1));

@@ -118,6 +118,7 @@ SAVAC      STJ  9F                SAVE RET.ADDRESS
            LD3  SAV3
            LD4  SAV4
            LDA  ACC               RA := ACC
+           STA  RESULT,4          SAVE TO RESULT()
            JMP  XLATE             CONVERT IT
            STA  XACC              SAVE
            LDA  W,4
@@ -125,7 +126,6 @@ SAVAC      STJ  9F                SAVE RET.ADDRESS
            CMPA XACC
            JE   *+2
            INC3 1                 NFAILED := NFAILED + 1
-           STA  RESULT,4          SAVE TO RESULT()
            DEC4 1                 RI4 := RI4 - 1
 8H         LDA  U                 ACC := U
            STA  ACC
@@ -141,7 +141,7 @@ SAVAC      STJ  9F                SAVE RET.ADDRESS
 XLATE      STJ  9F
            CMPA =0=
            JNE  9F                NOT ZERO? DONE.
-           LDX  1                 RX := 1
+           ENTX 1                 RX := 1
            SRC  1                 RA := SIGN(RA) + 1(1:1)
 9H         JMP  *
 *
@@ -179,11 +179,11 @@ OUTPUT     STJ  9F
 * PUT NUMBER ON CARD
 *
 PUTNUM     STJ  9F
-           STA  NONZERO(0:0)      SAVE SIGN
            CHAR                   CONVERT TO CHAR
-           STA  BUF1,2
+           STA  BUF1,2              PRESERVES SIGN!
            STX  BUF1+1,2
-           LDA  NONZERO
+           ENTX 1                 +/-1BBBB
+           SRC  1
            JANN 1F
            LDA  BUF1+1,2(1:5)
            SUB  =20=
