@@ -20,7 +20,7 @@ call asml.bat %1
 
 copy/y cardload.dek+%1.tra reader
 
-.\mix.exe -g > %1.tre 2>&1
+.\mix.exe -g -y %1.sym > %1.tre 2>&1
 
 if exist "printer" copy/y printer %1.log
 goto end

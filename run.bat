@@ -7,5 +7,5 @@ copy/y cardload.dek+a.tra+fptst.dek reader
 rem binary + FP option
 set MIXCONFIG=bf
 if exist punch del/q punch
-.\mix.exe -g -y a.sym
+.\mix.exe -w -g -y a.sym
 rem >a.tre 2>&1

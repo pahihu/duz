@@ -48,6 +48,7 @@
  *				fixed NTESTS init
  *				added Tyme warp
  *              fixed WAIT state instr. fetch
+ *				fixed DoEvents()
  *  250715AP    fixed fpDIV(): need remainder in RX
  *              maintenance mode: number input in octal and 11-punch decimal
  *              always clear CY in fpADD()
@@ -345,11 +346,12 @@ unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 int WaitRTI;
 Toggle CY;
-Toggle TYMEWARP, DOLAPSE;
+Toggle TYMEWARP;
 Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
 long NTESTS;
 Toggle ZLITERALS;
+Toggle DOEVENTS;
 
 #define rA	 reg[0]
 #define rI1	 reg[1]
@@ -1899,8 +1901,6 @@ typedef struct __Device {
 
     Toggle pending;     /* pending INT */
 
-	Toggle evtNew;		/* Schedule() sets to new */
-
     int evtNext, intNext;
 } Device;
 
@@ -2040,28 +2040,11 @@ static char *sio[] = {
 	"DOIO.RDY"
 };
 
-void Schedule(unsigned delta, int u, EventType what, Word M)
+int PendingEventH;
+
+void EventEnQ(int u, unsigned when)
 {
-    int i, p;
-    unsigned when;
-
-    ASSERT(0 <= EventH && EventH <= MAX_DEVS);
-
-    ASSERT(0 == devs[u].evtNext);
-    ASSERT(DO_NOTHING == devs[u].what);
-
-    /* unit is busy until delta */
-    devs[u].evt = LapseTyme + delta;
-
-    /* do actual I/O at delta/2 */
-    /* NB. except DO_RDY @ Tyme+delta */
-    when = LapseTyme + ((DO_RDY == what) ? delta : delta / 2);
-    devs[u].what = what;
-    devs[u].when = when;
-    devs[u].LOC = P;
-    devs[u].M = M;
-    devs[u].S = STATE;
-    devs[u].evtNew = ON;
+	int i, p;
 
     i = EventH; p = 0;
     while (i && devs[i-1].when <= when) {
@@ -2071,16 +2054,13 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     if ((0 == EventH) || (EventH == i)) { /* empty or head */
         devs[u].evtNext = EventH;
         EventH = u+1;
-        /* if (OFF == DOLAPSE) {
-            DOLAPSE = ON;
-        } */
     } else if (0 == devs[p-1].evtNext) /* tail */
         devs[p-1].evtNext = u+1;
     else { /* middle */
         devs[p-1].evtNext = u+1;
         devs[u].evtNext = i;
     }
-    
+
     if (TRACEIO) {
 	    Info("*********** SCHEDULED I/O ***********");
 	    Info("TYME=%09llu", Tyme);
@@ -2093,6 +2073,36 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
 	    }
 	    Info("*************************************");
     }
+}
+
+void Schedule(unsigned delta, int u, EventType what, Word M)
+{
+    unsigned when;
+
+    ASSERT(0 <= EventH && EventH <= MAX_DEVS);
+
+    ASSERT(0 == devs[u].evtNext);
+    ASSERT(DO_NOTHING == devs[u].what);
+
+    /* unit is busy until delta */
+    devs[u].evt = /*LapseTyme + */delta;
+
+    /* do actual I/O at delta/2 */
+    /* NB. except DO_RDY @ Tyme+delta */
+    when = /*LapseTyme + */ ((DO_RDY == what) ? delta : delta / 2);
+    devs[u].what = what;
+    devs[u].when = when;
+    devs[u].LOC = P;
+    devs[u].M = M;
+    devs[u].S = STATE;
+
+    if (DOEVENTS) {
+	    devs[u].evtNext = PendingEventH;
+	    PendingEventH = u+1;
+	    return;
+    }
+
+    EventEnQ(u, when);
 }
 
 void ScheduleINT(int u)
@@ -2207,9 +2217,10 @@ void DoEvents(void)
 		delta = Tyme - prevTyme;
 	}
     ASSERT(0 != delta);
-	TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when);
+	// TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when);
 
 	/* process events */
+	DOEVENTS = ON;
 	while (EventH && devs[EventH-1].when <= delta) {
 		u = EventH-1;
 		EventH = devs[u].evtNext;
@@ -2217,6 +2228,8 @@ void DoEvents(void)
 		devs[u].evt -= (devs[u].evt < delta) ? devs[u].evt : delta;
 		doIO(u);
 	}
+	DOEVENTS = OFF;
+
 	/* lapse delta tyme */
 	p = EventH;
 	while (p) {
@@ -2224,18 +2237,22 @@ void DoEvents(void)
 		ASSERT(delta < devs[u].when);
 		ASSERT(devs[u].when <= devs[u].evt);
 		ASSERT(!devStuck(u));
-		if (devs[u].evtNew) {
-			devs[u].evtNew = OFF;
-		} else {
-			devs[u].when -= delta;
-			devs[u].evt -= delta;
-		}
+		devs[u].when -= delta;
+		devs[u].evt -= delta;
 		p = devs[u].evtNext;
 	}
+
+	/* insert new events */
+	while (PendingEventH) {
+		u = PendingEventH-1;
+		PendingEventH = devs[u].evtNext;
+		devs[u].evtNext = 0;
+		EventEnQ(u, devs[u].when);
+	}
+
 	prevTyme = Tyme;
 
     if (0 == EventH) {
-        DOLAPSE = OFF;
         LapseTyme = 0;
     }
 }
@@ -4484,9 +4501,9 @@ int Step(void)
 					}
 					// at the head of EventQ?
 					if (EventH && w == EventH-1) {
-						TraceIO("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, devs[w].evt-1);
-						Tyme += devs[w].evt-1;
-						InstCount += devs[w].evt-1;
+						TraceIO("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, devs[w].when-1);
+						Tyme += devs[w].when-1;
+						InstCount += devs[w].when-1;
 					}
 				}
 			}
@@ -4667,11 +4684,12 @@ void Run(Word p)
 		} else if (IsRunning()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
-        if (DOLAPSE) LapseTyme += Tyme - OldTyme;
+        // if (EventH) LapseTyme += Tyme - OldTyme;
 	}
     if (IsHalted()) {
         /* normal HLT, process I/O events */
         while (EventH) {
+	        TraceIO("HALTED TYME=%09llu EVENTH",Tyme);
             Tyme++; IdleTyme++; DoEvents();
             // TBD: if halted then INTs cannot be delivered
             // DoInterrupts();
@@ -4682,6 +4700,7 @@ void Run(Word p)
             if (!devStuck(u))
                 evt = MAX(evt, devs[u].evt);
         if (evt) {
+	        TraceIO("HALTED TYME=%09llu EVT=%u", Tyme, evt);
             Tyme += evt; IdleTyme += evt;
         }
     }
@@ -4840,7 +4859,7 @@ void InitOptions(void)
     SYMNM = NULL;
     ZLITERALS = OFF;
     NTESTS = 10000L;
-    TYMEWARP = DOLAPSE = OFF;
+    TYMEWARP = OFF;
 }
 
 void InitConfig(const char *arg)
@@ -4899,6 +4918,7 @@ void Init(void)
     }
     EventH = 0;
     PendingH = 0;
+    PendingEventH = 0;
 
     InitCore();
     InitMixToAscii();
@@ -4951,8 +4971,11 @@ void Go(int d)
 	if (d < 0 || d >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
 		Usage();
 	devINP(d, 0);
-	Tyme = devs[d].evt;
-	prevTyme = 0; DoEvents();
+	prevTyme = 0; Tyme = devs[d].evt;
+	while (EventH) {
+		Tyme++; IdleTyme++;
+		DoEvents();
+	}
 	prevTyme = Tyme = 0;
 	Run(0);
 }
