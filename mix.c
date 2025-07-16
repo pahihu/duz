@@ -46,6 +46,7 @@
  *	250716AP	delta-based I/O
  *				64bit InstCount, Tyme, IdleTyme
  *				fixed NTESTS init
+ *				added Tyme warp
  *  250715AP    fixed fpDIV(): need remainder in RX
  *              maintenance mode: number input in octal and 11-punch decimal
  *              always clear CY in fpADD()
@@ -342,6 +343,7 @@ unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 int WaitRTI;
 Toggle CY;
+Toggle TYMEWARP;
 Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
 long NTESTS;
@@ -1643,7 +1645,7 @@ void Resume(void)
 	ASSERT(IsWaiting());
     ASSERT(S_NORMAL == STATESAV || S_CONTROL == STATESAV);
 
-    TraceIOLoc("RESUME AT %09u", Tyme);
+    TraceIOLoc("RESUME AT %09llu", Tyme);
 
     STATE = STATESAV;
     STATESAV = S_HALT;
@@ -1654,7 +1656,7 @@ void Wait(void)
     ASSERT(!IsWaiting());
     ASSERT(S_HALT == STATESAV);
 
-    TraceIOLoc("WAIT AT %07u", Tyme);
+    TraceIOLoc("WAIT AT %09llu", Tyme);
 
     STATESAV = STATE;
     STATE = S_WAIT;
@@ -1894,6 +1896,8 @@ typedef struct __Device {
 
     Toggle pending;     /* pending INT */
 
+	Toggle evtNew;		/* Schedule() sets to new */
+
     int evtNext, intNext;
 } Device;
 
@@ -2054,6 +2058,7 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     devs[u].LOC = P;
     devs[u].M = M;
     devs[u].S = STATE;
+    devs[u].evtNew = ON;
 
     i = EventH; p = 0;
     while (i && devs[i-1].when <= when) {
@@ -2072,6 +2077,7 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     
     if (TRACEIO) {
 	    Info("*********** SCHEDULED I/O ***********");
+	    Info("TYME=%09llu", Tyme);
 	    i = EventH;
 	    while (i) {
 		    p = i-1;
@@ -2142,7 +2148,7 @@ void doIO(int u)
 	what = devs[u].what;
 
     PSAV = P; P = LOC;
-        DEV_TraceIOLoc(u, M, "%09u %s", Tyme, sio[what]);
+    DEV_TraceIOLoc(u, M, "%09llu %s", Tyme, sio[what]);
     P = PSAV;
     	
     devs[u].what = DO_NOTHING;
@@ -2211,8 +2217,12 @@ void DoEvents(void)
 		ASSERT(delta < devs[u].when);
 		ASSERT(devs[u].when <= devs[u].evt);
 		ASSERT(!devStuck(u));
-		devs[u].when -= delta;
-		devs[u].evt -= delta;
+		if (devs[u].evtNew) {
+			devs[u].evtNew = OFF;
+		} else {
+			devs[u].when -= delta;
+			devs[u].evt -= delta;
+		}
 		p = devs[u].evtNext;
 	}
 	prevTyme = Tyme;
@@ -4446,6 +4456,21 @@ int Step(void)
         w = DEVNO(F);
         devOpen(w);
 		if (devBusy(w)) {
+			/* tyme warp */
+			if (TYMEWARP) {
+				if (M == P) {
+					if (0 == (MIX_INTERRUPT & CONFIG) && devStuck(w)) {
+						/* won't do progress */
+						return MIX_ErrorLoc("UNO%02o STUCK", F);
+					}
+					// at the head of EventQ?
+					if (EventH && w == EventH-1) {
+						Info("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, devs[w].evt-1);
+						Tyme += devs[w].evt-1;
+						InstCount += devs[w].evt-1;
+					}
+				}
+			}
             rJ = P + 1;
 			P = M;
             return 0;
@@ -4603,15 +4628,24 @@ void Run(Word p)
         }
         OLDP = P;
         Step();
-        if (EventH && 0 == (loopCnt & EVENT_SLICE)) {
+        if (EventH /*&& 0 == (loopCnt & EVENT_SLICE)*/) {
 			DoEvents();
 		}
 		if (IsNormal() && (WaitRTI || PendingH)) {
 			DoInterrupts();
 		}
-        if (IsWaiting())
+        if (IsWaiting()) {
             P = OLDP;
-        else if (IsRunning()) {
+            /* tyme warp */
+            if (TYMEWARP) {
+	            if (EventH) {
+					evt = devs[EventH-1].when-1;
+					Info("WARP WAIT TYME=%09llu DELTA=%07u", Tyme, evt);
+					Tyme += evt;
+					IdleTyme += evt;
+				}
+			}
+		} else if (IsRunning()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
         loopCnt++;
@@ -4787,6 +4821,7 @@ void InitOptions(void)
     SYMNM = NULL;
     ZLITERALS = OFF;
     NTESTS = 10000L;
+    TYMEWARP = OFF;
 }
 
 void InitConfig(const char *arg)
@@ -4852,7 +4887,7 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprvz][-y symfile] file1...\n");
+	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprvwz][-y symfile] file1...\n");
     Print("options:\n");
     Print("    -g [unit]      push GO button on unit (def. card reader)\n");
     Print("    -c bcfimx      MIX config (also from MIXCONFIG env.var):\n");
@@ -4872,6 +4907,7 @@ void Usage(void)
     Print("    -s address     set START address\n");
     Print("    -t aio         enable tracing: Asm,Io,Op (also MIXTRACE env.var)\n");
     Print("    -v             verbose assembling\n");
+    Print("    -w             enable Tyme warp\n");
     Print("    -y symfile     specify symbol file (write/read)\n");
     Print("    -z             reuse literal constants\n");
     Print("\n");
@@ -5399,6 +5435,7 @@ int main(int argc, char*argv[])
 			}
 			break;
         case 'v': VERBOSE = ON; continue;
+        case 'w': TYMEWARP = ON; continue;
         case 'y':
             if (i + 1 < argc) {
                 SYMNM = argv[++i];

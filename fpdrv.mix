@@ -45,8 +45,8 @@ START      IN   BUF(CR)           READ CARD
            LDA  SEQNO             PRINT SEQNO
            JMP  WTO
            JMP  INPUT             LOAD INPUT DATA
-*           JMP  STEST             DO SOFT FP.TESTS
-           JMP  HTEST             DO HW FP.TESTS
+           JMP  STEST             DO SOFT FP.TESTS
+*           JMP  HTEST             DO HW FP.TESTS
            J3P  OUTPUT            SAVE RESULTS, IF FAILED
            LDA  SEQNO             SEQNO := SEQNO + 1
            INCA 1
