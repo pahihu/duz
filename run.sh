@@ -18,5 +18,5 @@ then
   export MIXTRACE=o
 fi
 rm -f punch
-export MIXCONFIG=b
+export MIXCONFIG=bf
 ./mix -g -y a.sym 2>&1 | tee a.tre

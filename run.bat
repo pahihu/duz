@@ -4,7 +4,8 @@ rem copy/y fpdrv.mix+fplib.mix+end.mix a.mix
 copy/y fpdrv.mix+fplib.mix+end.mix a.mix
 call asml.bat a
 copy/y cardload.dek+a.tra+fptst.dek reader
-set MIXCONFIG=b
+rem binary + FP option
+set MIXCONFIG=bf
 if exist punch del/q punch
 .\mix.exe -g -y a.sym
 rem >a.tre 2>&1

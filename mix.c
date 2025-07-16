@@ -43,6 +43,9 @@
  *
  *  History:
  *  ========
+ *	250716AP	delta-based I/O
+ *				64bit InstCount, Tyme, IdleTyme
+ *				fixed NTESTS init
  *  250715AP    fixed fpDIV(): need remainder in RX
  *              maintenance mode: number input in octal and 11-punch decimal
  *              always clear CY in fpADD()
@@ -328,11 +331,13 @@ const char *SYMNM;
 #define TYME_BASE   6
 
 // typedef struct { __uint64 t; } TymeT;
-typedef unsigned TymeT;
+typedef __uint64 tyme_t;
+typedef __uint64 inst_count_t;
 
+tyme_t Tyme, IdleTyme;
+inst_count_t InstCount;
 FILE *LPT;
-TymeT Tyme, IdleTyme;
-unsigned InstCount, TraceCount, ElapsedMS;
+unsigned TraceCount, ElapsedMS;
 unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 int WaitRTI;
@@ -373,13 +378,14 @@ int StripLine(char *line);
 #define DEV_TT 	7
 #define	DEV_PT 	8
 
-typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_BRK} EventType;
+typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_RDY} EventType;
 int EventH, PendingH;
 
 void Schedule(unsigned delta, int u, EventType what, Word M);
 void ScheduleINT(int u);
 
 void devError(int u);
+int devStuck(int u);
 void Usage(void);
 
 
@@ -1607,36 +1613,9 @@ int Halt(void)
     return 1;
 }
 
-int Running(void)
+int IsRunning(void)
 {
     return (S_HALT != STATE && S_STOP != STATE);
-}
-
-unsigned WaitEvt;
-
-void Awake(void)
-{
-    ASSERT(0 < WaitEvt && WaitEvt <= Tyme);
-    ASSERT(S_NORMAL == STATESAV || S_CONTROL == STATESAV);
-
-    TraceIOLoc("AWAKE AT %09u", Tyme);
-
-    STATE = STATESAV;
-    STATESAV = S_HALT;
-    WaitEvt = 0;
-}
-
-void WaitFor(unsigned evt)
-{
-    ASSERT(evt > Tyme);
-    ASSERT(0 == WaitEvt);
-    ASSERT(S_HALT == STATESAV);
-
-    TraceIOLoc("WAIT UNTIL %07u", evt);
-
-    WaitEvt = evt;
-    STATESAV = STATE;
-    STATE = S_WAIT;
 }
 
 int IsNormal(void)
@@ -1654,9 +1633,31 @@ int IsWaiting(void)
     return S_WAIT == STATE;
 }
 
-int Halted(void)
+int IsHalted(void)
 {
     return S_HALT == STATE;
+}
+
+void Resume(void)
+{
+	ASSERT(IsWaiting());
+    ASSERT(S_NORMAL == STATESAV || S_CONTROL == STATESAV);
+
+    TraceIOLoc("RESUME AT %09u", Tyme);
+
+    STATE = STATESAV;
+    STATESAV = S_HALT;
+}
+
+void Wait(void)
+{
+    ASSERT(!IsWaiting());
+    ASSERT(S_HALT == STATESAV);
+
+    TraceIOLoc("WAIT AT %07u", Tyme);
+
+    STATESAV = STATE;
+    STATE = S_WAIT;
 }
 
 void SaveSTATE(Word loc)
@@ -2029,7 +2030,7 @@ static char *sio[] = {
 	"DOIO.IOC",
 	"DOIO.IN",
 	"DOIO.OUT",
-	"DOIO.BRK"
+	"DOIO.RDY"
 };
 
 void Schedule(unsigned delta, int u, EventType what, Word M)
@@ -2043,10 +2044,11 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     ASSERT(DO_NOTHING == devs[u].what);
 
     /* unit is busy until delta */
-    devs[u].evt = Tyme + delta;
+    devs[u].evt = delta;
 
     /* do actual I/O at delta/2 */
-    when = Tyme + delta / 2;
+    /* NB. except DO_RDY @ Tyme+delta */
+    when = (DO_RDY == what) ? delta : delta / 2;
     devs[u].what = what;
     devs[u].when = when;
     devs[u].LOC = P;
@@ -2157,47 +2159,80 @@ void doIO(int u)
     case DO_OUT:
         blkWrite(u, M, IOchar[x].m2a);
         break;
-	case DO_BRK:
-        if (devs[u].pending) {
-            Warning("UNO=%02o PENDING INTERRUPT SINCE %08d", UNO(u), devs[u].when);
-        } else {
-            ScheduleINT(u);
+	case DO_RDY:
+	    if (CONFIG & MIX_INTERRUPT) {
+		    // if I/O initiated in control state and not the RTC
+		    if (u && S_CONTROL == devs[u].S) {
+		        if (devs[u].pending) {
+		            Warning("UNO=%02o PENDING INTERRUPT", UNO(u));
+		        } else {
+		            ScheduleINT(u);
+		        }
+	        }
         }
-		break;
+		return;
     }
-    
-    if (S_CONTROL == devs[u].S && u && DO_BRK != what) {
-	    Schedule(devs[u].evt - Tyme, u, DO_BRK, M);
+    // if not RTC and not stuck
+    if (u && !devStuck(u)) {
+	    Schedule(devs[u].evt, u, DO_RDY, M);
     }
 }
 
+tyme_t prevTyme;
+
 void DoEvents(void)
 {
-	int u;
 	
-	while (EventH && devs[EventH-1].when <= Tyme) {
+	int u, p;
+	tyme_t delta;
+
+	ASSERT(EventH);
+
+	if (Tyme < prevTyme) {
+		/* wrap-around */
+		delta = DT_STUCK - prevTyme + Tyme + 1;
+	} else {
+		delta = Tyme - prevTyme;
+	}
+	TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when);
+
+	/* process events */
+	while (EventH && devs[EventH-1].when <= delta) {
 		u = EventH-1;
 		EventH = devs[u].evtNext;
 		devs[u].evtNext = 0;
+		devs[u].evt -= (devs[u].evt < delta) ? devs[u].evt : delta;
 		doIO(u);
 	}
+	/* lapse delta tyme */
+	p = EventH;
+	while (p) {
+		u = p-1;
+		ASSERT(delta < devs[u].when);
+		ASSERT(devs[u].when <= devs[u].evt);
+		ASSERT(!devStuck(u));
+		devs[u].when -= delta;
+		devs[u].evt -= delta;
+		p = devs[u].evtNext;
+	}
+	prevTyme = Tyme;
 }
 
 void DoInterrupts(void)
 {
 	int u;
 
-    if (IsNormal()) {
-        if (WaitRTI) {
-            WaitRTI--;
-        } else if (PendingH) {
-            ASSERT(CONFIG & MIX_INTERRUPT);
-            u = PendingH - 1;
-            ASSERT(devs[u].pending);
-            PendingH = devs[u].intNext;
-            devs[u].intNext = 0;
-		    SaveSTATE(devs[u].IntAddr);
-        }
+	ASSERT(IsNormal());
+
+    if (WaitRTI) {
+		WaitRTI--;
+	} else if (PendingH) {
+        ASSERT(CONFIG & MIX_INTERRUPT);
+        u = PendingH - 1;
+        ASSERT(devs[u].pending);
+        PendingH = devs[u].intNext;
+        devs[u].intNext = 0;
+	    SaveSTATE(devs[u].IntAddr);
     }
 }
 
@@ -2252,11 +2287,13 @@ int devStuck(int u)
 
 int devBusy(int u)
 {
-    if (IsWaiting()) {
-        if (Tyme >= WaitEvt)
-            Awake();
+	int busy;
+
+	busy = (DT_STUCK == devs[u].evt) || devs[u].evt;
+    if (IsWaiting() && !busy) {
+		Resume();
     }
-    return (DT_STUCK == devs[u].evt) || (Tyme < devs[u].evt);
+    return busy;
 }
 
 int IsCRLF(int ch)
@@ -4425,7 +4462,7 @@ int Step(void)
         if (devBusy(w)) {
             IdleTyme++;
             if (!IsWaiting())
-                WaitFor(devs[w].evt);
+                Wait();
             return 0;
         }
         ASSERT(!IsWaiting());
@@ -4543,43 +4580,55 @@ int Step(void)
 	return 0;
 }
 
+#define EVENT_SLICE		7
+
 void Run(Word p)
 {
     Word OLDP;
     unsigned evt;
     int u;
-    unsigned startMS;
+    unsigned startMS, loopCnt;
 
     startMS = CurrentMS();
-	P = p; OLDP = smADD(p, 1); STATE = S_NORMAL;
-	while (Running()) {
+	P = p;
+	OLDP = smADD(p, 1);
+	// TBD: when interrupt facility is installed
+	//		the STATE should be S_CONTROL?
+	STATE = S_NORMAL;
+	loopCnt = 0;
+	while (IsRunning()) {
         if (!IsWaiting()) {
             if (TRACE && OLDP != P)
                 Status(P);
         }
         OLDP = P;
         Step();
-        DoEvents();
-        DoInterrupts();
+        if (EventH && 0 == (loopCnt & EVENT_SLICE)) {
+			DoEvents();
+		}
+		if (IsNormal() && (WaitRTI || PendingH)) {
+			DoInterrupts();
+		}
         if (IsWaiting())
             P = OLDP;
-        else if (Running()) {
+        else if (IsRunning()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
+        loopCnt++;
 	}
-    if (Halted()) {
+    if (IsHalted()) {
         /* normal HLT, process I/O events */
         while (EventH) {
             DoEvents(); Tyme++; IdleTyme++;
-            DoInterrupts();
+            // TBD: if halted then INTs cannot be delivered
+            // DoInterrupts();
         }
         /* wait until all devs are ready */
         evt = 0;
         for (u = 0; u < MAX_DEVS; u++)
             if (!devStuck(u))
                 evt = MAX(evt, devs[u].evt);
-        if (evt > Tyme) {
-            evt -= Tyme;
+        if (evt) {
             Tyme += evt; IdleTyme += evt;
         }
     }
@@ -4737,6 +4786,7 @@ void InitOptions(void)
     CARDCODE = CARD_MIX;
     SYMNM = NULL;
     ZLITERALS = OFF;
+    NTESTS = 10000L;
 }
 
 void InitConfig(const char *arg)
@@ -4795,7 +4845,6 @@ void Init(void)
     }
     EventH = 0;
     PendingH = 0;
-    WaitEvt = 0;
 
     InitCore();
     InitMixToAscii();
@@ -4848,8 +4897,8 @@ void Go(int d)
 		Usage();
 	devINP(d, 0);
 	Tyme = devs[d].evt;
-	DoEvents();
-	Tyme = 0;
+	prevTyme = 0; DoEvents();
+	prevTyme = Tyme = 0;
 	Run(0);
 }
 
@@ -5318,7 +5367,6 @@ int main(int argc, char*argv[])
         case 'd': DUMP = ON; continue;
         case 'l': LNKLD = ON; continue;
         case 'm':
-            NTESTS = 10000L;
 			if (i + 1 < argc) {
                 arg = argv[++i];
                 NTESTS = satol(arg);
@@ -5395,8 +5443,8 @@ int main(int argc, char*argv[])
         double elapsedTySeconds = (Tyme * TYME_BASE) / 1000000.0;
         double mipsRate = (InstCount / elapsedSeconds) / 1000000.0;
         double kipsRate = (InstCount / elapsedTySeconds) / 1000.0;
-        Print("%*sTOTAL INSTRUCTIONS EXECUTED:     %09d\n", 30, "", InstCount);
-        Print("%*sTOTAL ELAPSED TYME:              %09du (%09d IDLE) (%5.1lf KIPS)\n", 30, "", Tyme, IdleTyme, kipsRate);
+        Print("%*sTOTAL INSTRUCTIONS EXECUTED:     %09llu\n", 30, "", InstCount);
+        Print("%*sTOTAL ELAPSED TYME:              %09lluu (%09lluu IDLE) (%5.1lf KIPS)\n", 30, "", Tyme, IdleTyme, kipsRate);
 
         Print("%*sTOTAL ELAPSED TIME:              %9.3lfs                  (%5.1lf MIPS)\n", 30, "", elapsedSeconds, mipsRate);
     }
