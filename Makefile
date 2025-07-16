@@ -1,6 +1,6 @@
 CC = gcc
-# OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
-OPT = -g
+OPT = -O2 -fomit-frame-pointer -DNDEBUG=1 #-DENABLE_ICACHE
+# OPT = -g
 # MATH = -ffloat-store -frounding-math
 MATH = -frounding-math
 CFLAGS = -Wall -pedantic $(OPT) $(MATH)

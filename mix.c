@@ -47,6 +47,7 @@
  *				64bit InstCount, Tyme, IdleTyme
  *				fixed NTESTS init
  *				added Tyme warp
+ *              fixed WAIT state instr. fetch
  *  250715AP    fixed fpDIV(): need remainder in RX
  *              maintenance mode: number input in octal and 11-punch decimal
  *              always clear CY in fpADD()
@@ -316,7 +317,7 @@ int MAX_MEM;
 #define INT_ADDR_DEV_BASE	20
 #define	RTC					ctlmem[ADDR_RTC]
 
-Word reg[10], *mem, *ctlmem, P;
+Word reg[10], *mem, *ctlmem, P, IR;
 const char **mapsyms;
 Toggle OT;
 Comparator CI;
@@ -366,6 +367,7 @@ void MemWrite(Word a, int f, Word w);
 Word MemRead(Word a);
 int Stop(void);
 int StripLine(char *line);
+
 
 #define UNO(dev)    ((dev) - 1)
 #define DEVNO(u)    ((u) + 1)
@@ -2200,6 +2202,7 @@ void DoEvents(void)
 	} else {
 		delta = Tyme - prevTyme;
 	}
+    ASSERT(0 != delta);
 	TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when);
 
 	/* process events */
@@ -4212,18 +4215,25 @@ A2:
 
 int Step(void)
 {
-	Word IR, A, I, F, C, M;
+	Word A, I, F, C, M;
 	Word w;
-	int cond, x;
+	int cond;
+    unsigned x;
 
-    if (CheckFetch(P)) {
-        return Stop();
-	}
-	IR = MemRead(P); w = MAG(IR);
+    if (IsWaiting()) {
+        Tyme++;
+    } else {
+        if (CheckFetch(P)) {
+            return Stop();
+	    }
+	    IR = MemRead(P);
+    }
+    w = MAG(IR);
 	C = BYTE(w); w /= BYTESIZE;
 	F = BYTE(w); w /= BYTESIZE;
 	I = BYTE(w); w /= BYTESIZE;
-	A = A_MASK & w; if (SIGN(IR)) A += SM_SIGN;
+    A = A_MASK & w; if (SIGN(IR)) A += SM_SIGN;
+
 	M = A;
     if (I) {
         if (CONFIG & MIX_INDEX) {
@@ -4465,7 +4475,7 @@ int Step(void)
 					}
 					// at the head of EventQ?
 					if (EventH && w == EventH-1) {
-						Info("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, devs[w].evt-1);
+						TraceIO("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, devs[w].evt-1);
 						Tyme += devs[w].evt-1;
 						InstCount += devs[w].evt-1;
 					}
@@ -4612,7 +4622,7 @@ void Run(Word p)
     Word OLDP;
     unsigned evt;
     int u;
-    unsigned startMS, loopCnt;
+    unsigned startMS;
 
     startMS = CurrentMS();
 	P = p;
@@ -4620,7 +4630,6 @@ void Run(Word p)
 	// TBD: when interrupt facility is installed
 	//		the STATE should be S_CONTROL?
 	STATE = S_NORMAL;
-	loopCnt = 0;
 	while (IsRunning()) {
         if (!IsWaiting()) {
             if (TRACE && OLDP != P)
@@ -4628,7 +4637,7 @@ void Run(Word p)
         }
         OLDP = P;
         Step();
-        if (EventH /*&& 0 == (loopCnt & EVENT_SLICE)*/) {
+        if (EventH) {
 			DoEvents();
 		}
 		if (IsNormal() && (WaitRTI || PendingH)) {
@@ -4640,7 +4649,7 @@ void Run(Word p)
             if (TYMEWARP) {
 	            if (EventH) {
 					evt = devs[EventH-1].when-1;
-					Info("WARP WAIT TYME=%09llu DELTA=%07u", Tyme, evt);
+					TraceIO("WARP WAIT TYME=%09llu DELTA=%07u", Tyme, evt);
 					Tyme += evt;
 					IdleTyme += evt;
 				}
@@ -4648,12 +4657,11 @@ void Run(Word p)
 		} else if (IsRunning()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
-        loopCnt++;
 	}
     if (IsHalted()) {
         /* normal HLT, process I/O events */
         while (EventH) {
-            DoEvents(); Tyme++; IdleTyme++;
+            Tyme++; IdleTyme++; DoEvents();
             // TBD: if halted then INTs cannot be delivered
             // DoInterrupts();
         }
