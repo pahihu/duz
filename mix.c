@@ -337,6 +337,7 @@ typedef __uint64 tyme_t;
 typedef __uint64 inst_count_t;
 
 tyme_t Tyme, IdleTyme;
+unsigned LapseTyme;
 inst_count_t InstCount;
 FILE *LPT;
 unsigned TraceCount, ElapsedMS;
@@ -344,7 +345,7 @@ unsigned short *freq, *ctlfreq;
 MachineState STATE, STATESAV;
 int WaitRTI;
 Toggle CY;
-Toggle TYMEWARP;
+Toggle TYMEWARP, DOLAPSE;
 Toggle TRACEOP, TRACEIO, TRACEA, VERBOSE;
 Toggle XEQTING;
 long NTESTS;
@@ -2050,11 +2051,11 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     ASSERT(DO_NOTHING == devs[u].what);
 
     /* unit is busy until delta */
-    devs[u].evt = delta;
+    devs[u].evt = LapseTyme + delta;
 
     /* do actual I/O at delta/2 */
     /* NB. except DO_RDY @ Tyme+delta */
-    when = (DO_RDY == what) ? delta : delta / 2;
+    when = LapseTyme + ((DO_RDY == what) ? delta : delta / 2);
     devs[u].what = what;
     devs[u].when = when;
     devs[u].LOC = P;
@@ -2070,6 +2071,9 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     if ((0 == EventH) || (EventH == i)) { /* empty or head */
         devs[u].evtNext = EventH;
         EventH = u+1;
+        /* if (OFF == DOLAPSE) {
+            DOLAPSE = ON;
+        } */
     } else if (0 == devs[p-1].evtNext) /* tail */
         devs[p-1].evtNext = u+1;
     else { /* middle */
@@ -2229,6 +2233,11 @@ void DoEvents(void)
 		p = devs[u].evtNext;
 	}
 	prevTyme = Tyme;
+
+    if (0 == EventH) {
+        DOLAPSE = OFF;
+        LapseTyme = 0;
+    }
 }
 
 void DoInterrupts(void)
@@ -4623,6 +4632,7 @@ void Run(Word p)
     unsigned evt;
     int u;
     unsigned startMS;
+    tyme_t OldTyme;
 
     startMS = CurrentMS();
 	P = p;
@@ -4635,9 +4645,9 @@ void Run(Word p)
             if (TRACE && OLDP != P)
                 Status(P);
         }
-        OLDP = P;
+        OLDP = P; OldTyme = Tyme;
         Step();
-        if (EventH) {
+        if (EventH /*&& LapseTyme >= devs[EventH-1].when*/) {
 			DoEvents();
 		}
 		if (IsNormal() && (WaitRTI || PendingH)) {
@@ -4657,6 +4667,7 @@ void Run(Word p)
 		} else if (IsRunning()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
+        if (DOLAPSE) LapseTyme += Tyme - OldTyme;
 	}
     if (IsHalted()) {
         /* normal HLT, process I/O events */
@@ -4829,7 +4840,7 @@ void InitOptions(void)
     SYMNM = NULL;
     ZLITERALS = OFF;
     NTESTS = 10000L;
-    TYMEWARP = OFF;
+    TYMEWARP = DOLAPSE = OFF;
 }
 
 void InitConfig(const char *arg)
@@ -4866,7 +4877,7 @@ void Init(void)
 	int i;
 
 	InstCount = 0;
-	Tyme = 0; IdleTyme = 0;
+	Tyme = 0; IdleTyme = 0; LapseTyme = 0;
     ZERO = 0;
 	STATE = S_HALT; Halt();
 	FLOATOP = OLDFLOATOP = OFF;
