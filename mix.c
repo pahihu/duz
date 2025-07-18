@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *	250718AP	Tyme measurement fixes
  *	250716AP	delta-based I/O
  *				64bit InstCount, Tyme, IdleTyme
  *				fixed NTESTS init
@@ -337,8 +338,7 @@ const char *SYMNM;
 typedef __uint64 tyme_t;
 typedef __uint64 inst_count_t;
 
-tyme_t Tyme, IdleTyme;
-unsigned LapseTyme;
+tyme_t Tyme, IdleTyme, lastDoEventsTyme;
 inst_count_t InstCount;
 FILE *LPT;
 unsigned TraceCount, ElapsedMS;
@@ -1656,12 +1656,12 @@ void Resume(void)
     STATESAV = S_HALT;
 }
 
-void Wait(void)
+void Wait(unsigned evt)
 {
     ASSERT(!IsWaiting());
     ASSERT(S_HALT == STATESAV);
 
-    TraceIOLoc("WAIT AT %09llu", Tyme);
+    TraceIOLoc("WAIT AT %09llu DELTA=%u", Tyme, evt);
 
     STATESAV = STATE;
     STATE = S_WAIT;
@@ -2032,6 +2032,14 @@ void blkSeek(int u, unsigned pos);
 void blkRead(int u, unsigned adr, Byte *cvt);
 void blkWrite(int u, unsigned adr, char *cvt);
 
+static char *sio_sched[] = {
+	"NOP",
+	"IOC",
+	"IN",
+	"OUT",
+	"RDY"
+};
+
 static char *sio[] = {
 	"DOIO.NOP",
 	"DOIO.IOC",
@@ -2052,6 +2060,9 @@ void EventEnQ(int u, unsigned when)
         i = devs[i-1].evtNext;
     }
     if ((0 == EventH) || (EventH == i)) { /* empty or head */
+		if (0 == EventH) {
+			lastDoEventsTyme = Tyme;
+		}
         devs[u].evtNext = EventH;
         EventH = u+1;
     } else if (0 == devs[p-1].evtNext) /* tail */
@@ -2067,8 +2078,8 @@ void EventEnQ(int u, unsigned when)
 	    i = EventH;
 	    while (i) {
 		    p = i-1;
-			Info("%07u LOC=%04o DEV=%02o/%04o %s",
-                devs[p].when, devs[p].LOC, p, devs[p].M, sio[devs[p].what]);
+			Info("%07u LOC=%04o UNO=%02o/%04o %s",
+                devs[p].when, devs[p].LOC, UNO(p), devs[p].M, sio_sched[devs[p].what]);
 		    i = devs[p].evtNext;
 	    }
 	    Info("*************************************");
@@ -2081,15 +2092,16 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
 
     ASSERT(0 <= EventH && EventH <= MAX_DEVS);
 
+    ASSERT(0 != delta);
     ASSERT(0 == devs[u].evtNext);
     ASSERT(DO_NOTHING == devs[u].what);
 
     /* unit is busy until delta */
-    devs[u].evt = /*LapseTyme + */delta;
+    devs[u].evt = delta;
 
     /* do actual I/O at delta/2 */
     /* NB. except DO_RDY @ Tyme+delta */
-    when = /*LapseTyme + */ ((DO_RDY == what) ? delta : delta / 2);
+    when = (DO_RDY == what) ? delta : delta / 2;
     devs[u].what = what;
     devs[u].when = when;
     devs[u].LOC = P;
@@ -2200,8 +2212,7 @@ void doIO(int u)
     }
 }
 
-tyme_t prevTyme;
-
+unsigned delta1 = 0, maxdelta = 0;
 void DoEvents(void)
 {
 	
@@ -2210,13 +2221,17 @@ void DoEvents(void)
 
 	ASSERT(EventH);
 
-	if (Tyme < prevTyme) {
+	if (Tyme == lastDoEventsTyme)
+		return;
+
+	if (Tyme < lastDoEventsTyme) {
 		/* wrap-around */
-		delta = DT_STUCK - prevTyme + Tyme + 1;
+		delta = DT_STUCK - lastDoEventsTyme + Tyme + 1;
 	} else {
-		delta = Tyme - prevTyme;
+		delta = Tyme - lastDoEventsTyme;
 	}
     ASSERT(0 != delta);
+
 	// TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when);
 
 	/* process events */
@@ -2225,7 +2240,7 @@ void DoEvents(void)
 		u = EventH-1;
 		EventH = devs[u].evtNext;
 		devs[u].evtNext = 0;
-		devs[u].evt -= (devs[u].evt < delta) ? devs[u].evt : delta;
+		devs[u].evt -= MIN(devs[u].evt, delta);
 		doIO(u);
 	}
 	DOEVENTS = OFF;
@@ -2250,10 +2265,10 @@ void DoEvents(void)
 		EventEnQ(u, devs[u].when);
 	}
 
-	prevTyme = Tyme;
+	lastDoEventsTyme = Tyme;
 
     if (0 == EventH) {
-        LapseTyme = 0;
+        lastDoEventsTyme = 0;
     }
 }
 
@@ -4523,7 +4538,7 @@ int Step(void)
         if (devBusy(w)) {
             IdleTyme++;
             if (!IsWaiting())
-                Wait();
+                Wait(devs[w].evt);
             return 0;
         }
         ASSERT(!IsWaiting());
@@ -4649,7 +4664,6 @@ void Run(Word p)
     unsigned evt;
     int u;
     unsigned startMS;
-    tyme_t OldTyme;
 
     startMS = CurrentMS();
 	P = p;
@@ -4662,9 +4676,9 @@ void Run(Word p)
             if (TRACE && OLDP != P)
                 Status(P);
         }
-        OLDP = P; OldTyme = Tyme;
+        OLDP = P;
         Step();
-        if (EventH /*&& LapseTyme >= devs[EventH-1].when*/) {
+        if (EventH) {
 			DoEvents();
 		}
 		if (IsNormal() && (WaitRTI || PendingH)) {
@@ -4684,13 +4698,14 @@ void Run(Word p)
 		} else if (IsRunning()) {
             (SIGN(OLDP) ? ctlfreq : freq)[MAG(OLDP)]++; InstCount++;
         }
-        // if (EventH) LapseTyme += Tyme - OldTyme;
 	}
     if (IsHalted()) {
         /* normal HLT, process I/O events */
         while (EventH) {
 	        TraceIO("HALTED TYME=%09llu EVENTH",Tyme);
-            Tyme++; IdleTyme++; DoEvents();
+	        evt = devs[EventH-1].when;
+            Tyme += evt; IdleTyme += evt;
+            DoEvents();
             // TBD: if halted then INTs cannot be delivered
             // DoInterrupts();
         }
@@ -4860,6 +4875,7 @@ void InitOptions(void)
     ZLITERALS = OFF;
     NTESTS = 10000L;
     TYMEWARP = OFF;
+    DOEVENTS = OFF;
 }
 
 void InitConfig(const char *arg)
@@ -4896,7 +4912,7 @@ void Init(void)
 	int i;
 
 	InstCount = 0;
-	Tyme = 0; IdleTyme = 0; LapseTyme = 0;
+	Tyme = 0; IdleTyme = 0;
     ZERO = 0;
 	STATE = S_HALT; Halt();
 	FLOATOP = OLDFLOATOP = OFF;
@@ -4971,12 +4987,13 @@ void Go(int d)
 	if (d < 0 || d >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
 		Usage();
 	devINP(d, 0);
-	prevTyme = 0; Tyme = devs[d].evt;
+	lastDoEventsTyme = 0; Tyme = devs[d].when;
 	while (EventH) {
 		Tyme++; IdleTyme++;
 		DoEvents();
 	}
-	prevTyme = Tyme = 0;
+	lastDoEventsTyme = Tyme = IdleTyme = 0;
+	InstCount = 0;
 	Run(0);
 }
 
@@ -5527,7 +5544,6 @@ int main(int argc, char*argv[])
 
         Print("%*sTOTAL ELAPSED TIME:              %9.3lfs                  (%5.1lf MIPS)\n", 30, "", elapsedSeconds, mipsRate);
     }
-
 	return 0;
 }
 
