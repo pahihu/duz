@@ -43,11 +43,11 @@
  *
  *  History:
  *  ========
- *	250718AP	Tyme measurement fixes
+ *	250718AP	Tyme measurement fixes, simplified TymeWarp
  *	250716AP	delta-based I/O
  *				64bit InstCount, Tyme, IdleTyme
  *				fixed NTESTS init
- *				added Tyme warp
+ *				added TymeWarp
  *              fixed WAIT state instr. fetch
  *				fixed DoEvents()
  *  250715AP    fixed fpDIV(): need remainder in RX
@@ -1792,7 +1792,7 @@ int CheckFetch(Word a)
 
 void IncTIMER(unsigned diff)
 {
-	TIMER += diff; TIMER &= SM_WORD;
+	TIMER = SM_WORD & (TIMER + diff);
 }
 
 Word MemRead(Word a)
@@ -2265,11 +2265,7 @@ void DoEvents(void)
 		EventEnQ(u, devs[u].when);
 	}
 
-	lastDoEventsTyme = Tyme;
-
-    if (0 == EventH) {
-        lastDoEventsTyme = 0;
-    }
+	lastDoEventsTyme = (0 == EventH) ? 0 : Tyme;
 }
 
 void DoInterrupts(void)
@@ -4507,18 +4503,19 @@ int Step(void)
         w = DEVNO(F);
         devOpen(w);
 		if (devBusy(w)) {
-			/* tyme warp */
 			if (TYMEWARP) {
+				// busy loop?
 				if (M == P) {
 					if (0 == (MIX_INTERRUPT & CONFIG) && devStuck(w)) {
 						/* won't do progress */
 						return MIX_ErrorLoc("UNO%02o STUCK", F);
 					}
-					// at the head of EventQ?
-					if (EventH && w == EventH-1) {
-						TraceIO("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, devs[w].when-1);
-						Tyme += devs[w].when-1;
-						InstCount += devs[w].when-1;
+					// head of EventQ in the near future?
+					if (EventH && (devs[EventH-1].when <= devs[w].when)) {
+						unsigned evt = devs[w].when - 1;
+						TraceIO("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, evt);
+						Tyme += evt;
+						InstCount += evt;
 					}
 				}
 			}
@@ -4686,10 +4683,10 @@ void Run(Word p)
 		}
         if (IsWaiting()) {
             P = OLDP;
-            /* tyme warp */
             if (TYMEWARP) {
 	            if (EventH) {
-					evt = devs[EventH-1].when-1;
+		            // jump to tyme of 1st event
+					evt = devs[EventH-1].when - 1;
 					TraceIO("WARP WAIT TYME=%09llu DELTA=%07u", Tyme, evt);
 					Tyme += evt;
 					IdleTyme += evt;
