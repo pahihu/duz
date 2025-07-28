@@ -21,7 +21,7 @@ rm -f $inp.prn
 rm -f $inp.tra
 rm -f $inp.sym
 
-./mix -a $inp.mix -y $inp.sym -p 2>&1 | tee $inp.prn
+./mix_ape.exe -a $inp.mix -y $inp.sym -p 2>&1 | tee $inp.prn
 
 TS=$(date +%Y%m%d-%H%M%S)
 echo
