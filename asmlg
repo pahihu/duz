@@ -27,7 +27,7 @@ rm -f printer
 
 if [ -s $inp.tra ];
 then
-  cat cardload.dek $inp.tra >reader
+  cat crld.dek $inp.tra >reader
   ./mix_ape.exe -g -y $inp.sym 2>&1 | tee $inp.tre
 
   if [ -s printer ];

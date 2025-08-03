@@ -6,8 +6,8 @@ del/q core.mem
 .\mix.exe -a primes2.mix -p -c >runmix.log 2>&1
 .\mix.exe -c -s 3000 > runcore.log 2>&1
 goto end
-rem copy /y cardload.dek+prime.tra reader
-rem copy /y cardload.dek+primes.dek reader
+rem copy /y crld.dek+prime.tra reader
+rem copy /y crld.dek+primes.dek reader
 .\mix.exe -t io -g >mix.log 2>&1
 :end
 

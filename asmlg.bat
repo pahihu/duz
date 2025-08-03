@@ -18,7 +18,7 @@ if exist printer del/q printer
 
 call asml.bat %1
 
-copy/y cardload.dek+%1.tra reader
+copy/y crld.dek+%1.tra reader
 
 .\mix_ape.exe -g -y %1.sym > %1.tre 2>&1
 

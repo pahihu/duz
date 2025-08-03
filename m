@@ -13,8 +13,8 @@ rm -f printer
 # run from core
 ./mix -c -s 3000 2>&1 | tee runcore.log
 
-# load cardload and prime.tra into card reader
-cat cardload.dek prime.tra >reader
+# load crld and prime.tra into card reader
+cat crld.dek prime.tra >reader
 
 # push the GO button on the card reader
 ./mix -g 2>&1 | tee runprime.log
@@ -23,6 +23,6 @@ cat cardload.dek prime.tra >reader
 # ./mix -t o no1.mix 2>&1 | tee mix.log
 # ./mix -t o maximum.mix 2>&1 | tee mix.log
 exit 0
-cat cardload.dek hello.dek >reader
-# cat cardload.dek primes.dek >reader
+cat crld.dek hello.dek >reader
+# cat crld.dek primes.dek >reader
 ./mix -t io -g -p >mix.log 2>&1
