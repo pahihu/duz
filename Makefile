@@ -1,4 +1,5 @@
 CC = gcc
+# CC = cosmocc
 # OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
 OPT = -g
 # MATH = -ffloat-store -frounding-math

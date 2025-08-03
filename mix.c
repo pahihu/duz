@@ -177,7 +177,7 @@
 #include <stdarg.h>
 #include <math.h>
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(__COSMOPOLITAN__)
 typedef unsigned long __uint64;
 #include <sys/random.h>
 #include <sys/time.h>
