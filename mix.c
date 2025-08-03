@@ -43,6 +43,10 @@
  *
  *  History:
  *  ========
+ *  250803AP    fixed SaveSTATE/RestoreSTATE
+ *              renamed OT to OV
+ *              fixed address check in IN/OUT
+ *              machine starts in CONTROL state when interrupt facility installed
  *	250718AP	Tyme measurement fixes, simplified TymeWarp
  *	250716AP	delta-based I/O
  *				64bit InstCount, Tyme, IdleTyme
@@ -303,7 +307,7 @@ typedef enum {S_HALT, S_STOP, S_WAIT, S_NORMAL, S_CONTROL} MachineState;
 #define MIX_MASTER     128
 Word CONFIG;
 
-static char *sot = " X", *sci = "<=>", *ssta = "HSWN ";
+static char *sot = " X", *sci = "<=>", *ssta = "HSWNC";
 
 
 #define CORE_MEM    "core.mem"
@@ -321,7 +325,7 @@ int MAX_MEM;
 
 Word reg[10], *mem, *ctlmem, P, IR;
 const char **mapsyms;
-Toggle OT;
+Toggle OV;
 Comparator CI;
 Toggle TRANS, LNKLD, DUMP;
 #define CARD_MIX    0
@@ -1018,7 +1022,7 @@ void smDIV(Word *pquo, Word *prem, Word a, Word x, Word v)
 	int i, d;
 	
 	if (!MAG(v) || MAG(a) >= MAG(v)) {
-	    OT = ON;
+	    OV = ON;
 		*pquo = UNDEF; if (prem) *prem = UNDEF;
         return;
 	}
@@ -1351,13 +1355,13 @@ N5: PrintNorm("N5",e,hi_f,lo_f);
 	if (e < 0) {
         if (VERBOSE)
             Warning("NORM: EXPONENT UNDERFLOW");
-		OT = ON; CI = GREATER;
+		OV = ON; CI = GREATER;
         w = SIGN(hi_f) + FP_MIN;
         goto ErrOut;
 	} else if (e > BYTESIZE-1) {
         if (VERBOSE)
             Warning("NORM: EXPONENT OVERFLOW");
-		OT = ON; CI = LESS;
+		OV = ON; CI = LESS;
         w = SIGN(hi_f) + FP_MAX;
         goto ErrOut;
 	}
@@ -1676,11 +1680,11 @@ void SaveSTATE(Word loc)
 	ASSERT(IsNormal());
 	
 	for (i = 0; i < 8; i++)
-		ctlmem[i + 1] = reg[i];
+		ctlmem[i + 2] = reg[7-i];
 
     /* TBD MIXMASTER */
 	w  = MAG(P);       w *= BYTESIZE;
-	w += FIELD(OT,CI); w *= (BYTESIZE * BYTESIZE);
+	w += FIELD(OV,CI); w *= (BYTESIZE * BYTESIZE);
 	w += MAG(rJ);
 	ctlmem[1] = w;
 
@@ -1701,11 +1705,11 @@ void RestoreSTATE(void)
 	w  = ctlmem[1];
 	rJ = A_MASK & w; w /= BYTESIZE * BYTESIZE;
 	f  = BYTE(w);    w /= BYTESIZE;
-	OT = L(f); CI = R(f);
+	OV = L(f); CI = R(f);
 	P  = A_MASK & w;
 
 	for (i = 0; i < 8; i++)
-		reg[i] = ctlmem[i + 1];
+		reg[7-i] = ctlmem[i + 2];
 
 	STATE = S_NORMAL;
     WaitRTI = 1;
@@ -1748,7 +1752,7 @@ int CheckMasterOption(void)
 /* =================== M E M O R Y ========================== */
 
 
-int CheckAccess(Word a, char *msg)
+int CheckAccess(Word a, const char *msg)
 {
     if (SIGN(a) && IsNormal()) {
         return MIX_ErrorLoc("M=%c%010o ILLEGAL ACCESS %s", PLUS(a), MAG(a), msg);
@@ -1756,7 +1760,7 @@ int CheckAccess(Word a, char *msg)
     return 0;
 }
 
-int CheckAddr(Word a, char *msg)
+int CheckAddr(Word a, const char *msg)
 {
 	int ret;
 	
@@ -1770,14 +1774,18 @@ int CheckAddr(Word a, char *msg)
     return ret;
 }
 
-int CheckMemRead(Word a)
+int CheckMemAccess(Word a, const char *msg)
 {
     ASSERT(IsNormal() || IsControl());
 
-    if (CheckAccess(a, "MEMORY WRITE") || CheckAddr(a, "MEMORY READ"))
+    if (CheckAccess(a, msg) || CheckAddr(a, msg))
         return 1;
-
     return 0;
+}
+
+int CheckMemRead(Word a)
+{
+    return CheckMemAccess(a, "MEMORY WRITE");
 }
 
 int CheckFetch(Word a)
@@ -1806,11 +1814,7 @@ Word MemRead(Word a)
 
 int CheckMemWrite(Word a)
 {
-    ASSERT(IsNormal() || IsControl());
-
-    if (CheckAccess(a, "MEMORY WRITE") || CheckAddr(a, "MEMORY WRITE"))
-        return 1;
-    return 0;
+    return CheckMemAccess(a, "MEMORY WRITE");
 }
 
 Word WriteField(Word v, int f, Word w)
@@ -2666,8 +2670,8 @@ void devINP(int u, Word M)
     unsigned delta;
 	
 	x = devType(u);
-    if (CheckAddr(M, "IN BUFFER")
-        || CheckAddr(M + IOchar[x].blk_size, "IN BUFFER END"))
+    if (CheckMemAccess(M, "IN BUFFER")
+        || CheckMemAccess(M + IOchar[x].blk_size, "IN BUFFER END"))
     {
         Stop();
         return;
@@ -2711,8 +2715,8 @@ void devOUT(Word u,Word M)
     unsigned delta;
 	
 	x = devType(u);
-	if (CheckAddr(M, "OUT BUFFER")
-        || CheckAddr(M + IOchar[x].blk_size, "OUT BUFFER END"))
+	if (CheckMemAccess(M, "OUT BUFFER")
+        || CheckMemAccess(M + IOchar[x].blk_size, "OUT BUFFER END"))
     {
         Stop();
         return;
@@ -3517,7 +3521,7 @@ Word Expr(void)
 			Warning("FLOAT CONVERSION");
 			w = DoubleToFP(w2i(w));
 		}
-        OT = OFF;
+        OV = OFF;
         if (FLOATARG) {
 	        switch (B) {
 	        case '+': v = fpADD(v, w); break;
@@ -3540,7 +3544,7 @@ Word Expr(void)
 	        }
         }
         TraceAV(FLOATARG, "AFTER", 'V', v);
-        if (OT)
+        if (OV)
         	AsmError(EA_OVRFLW);
     }
     TraceAV(FLOATARG, "EXPR", 'V', v);
@@ -4135,7 +4139,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
 		xprint(reg[i]);
 
 	xprint(rJ);
-	Print("%c %c %09u\n", sot[OT], sci[CI], Tyme);
+	Print("%c %c %09u\n", sot[OV], sci[CI], Tyme);
 }
 
 
@@ -4301,7 +4305,7 @@ int Step(void)
             if (GetV(M, F, &w)) {
                 return 1;
             }
-    		w = smADD(rA, w); if (CY) OT = CY;
+            w = smADD(rA, w); if (CY) OV = CY;
     		if (!MAG(w)) w += SIGN(rA);
     		rA = w;
 		}
@@ -4318,7 +4322,7 @@ int Step(void)
             if (GetV(M, F, &w)) {
                 return 1;
             }
-    		rA = smSUB(rA, w); if (CY) OT = CY;
+            rA = smSUB(rA, w); if (CY) OV = CY;
         }
 		break;
 	case 3: /*MUL*/
@@ -4561,8 +4565,8 @@ int Step(void)
 		switch (F) {
 		case 0: /*JMP*/ cond = 1; break;
 		case 1: /*JSJ*/ cond = 1; break;
-		case 2: /*JOV*/ if ( ON == OT) { OT = OFF; cond = 1; } break;
-		case 3: /*JNOV*/if (OFF == OT) cond = 1; OT = OFF; break;
+		case 2: /*JOV*/ if ( ON == OV) { OV = OFF; cond = 1; } break;
+		case 3: /*JNOV*/if (OFF == OV) cond = 1; OV = OFF; break;
 		case 4: /*JL*/  cond = LESS == CI; break;
 		case 5: /*JE*/	cond = EQUAL == CI; break;
 		case 6: /*JG*/	cond = GREATER == CI; break;
@@ -4609,12 +4613,12 @@ int Step(void)
 		x = C - 48;
 		switch(F){
 		case 0: /*INCr*/
-			reg[x] = smADD(reg[x], M); if (CY) OT = ON;
+			reg[x] = smADD(reg[x], M); if (CY) OV = ON;
 			if ((0 < x && x < 7) && CheckIdx(x, CY))
                 return 1;
 			break;
 		case 1: /*DECr*/
-			reg[x] = smSUB(reg[x], M); if (CY) OT = ON;
+			reg[x] = smSUB(reg[x], M); if (CY) OV = ON;
 			if ((0 < x && x < 7) && CheckIdx(x, CY))
                 return 1;
 			break;
@@ -4665,9 +4669,6 @@ void Run(Word p)
     startMS = CurrentMS();
 	P = p;
 	OLDP = smADD(p, 1);
-	// TBD: when interrupt facility is installed
-	//		the STATE should be S_CONTROL?
-	STATE = S_NORMAL;
 	while (IsRunning()) {
         if (!IsWaiting()) {
             if (TRACE && OLDP != P)
@@ -4983,12 +4984,14 @@ void Go(int d)
 
 	if (d < 0 || d >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
 		Usage();
+
 	devINP(d, 0);
 	lastDoEventsTyme = 0; Tyme = devs[d].when;
 	while (EventH) {
 		Tyme++; IdleTyme++;
 		DoEvents();
 	}
+
 	lastDoEventsTyme = Tyme = IdleTyme = 0;
 	InstCount = 0;
 	Run(0);
@@ -5188,7 +5191,7 @@ void TestFPOp(char op, int bincmp)
             w0 = RoundDoubleToFP(dw0);
         }
         w1 = 0;
-        OT = OFF;
+        OV = OFF;
         switch (op) {
         case '+': w1 = fpADD(u, v); break;
         case '-': w1 = fpSUB(u, v); break;
@@ -5525,10 +5528,16 @@ int main(int argc, char*argv[])
 
     if (TRANS)
         PunchTrans();
+
+	/* TBD: when interrupt facility is installed
+	 *		the STATE should be S_CONTROL?
+     */
+    STATE = (CONFIG & MIX_INTERRUPT) ? S_CONTROL : S_NORMAL;
     if (CONFIG & MIX_PUSHGO) {
 	    Go(DEVNO(u));
     } else if (!ASMONLY)
         Run(START);
+
     if (DUMP)
         Stats(stderr, 4, 0);
     if (InstCount) {

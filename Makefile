@@ -1,6 +1,6 @@
 CC = gcc
-OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
-# OPT = -g
+# OPT = -O2 -fomit-frame-pointer -DNDEBUG=1
+OPT = -g
 # MATH = -ffloat-store -frounding-math
 MATH = -frounding-math
 CFLAGS = -Wall -pedantic $(OPT) $(MATH)
@@ -8,7 +8,7 @@ LDFLAGS = $(OPT)
 SRCS = mix.c
 OBJS = $(SRCS:.c=.o)
 
-TARGET = mix
+TARGET = mix_ape.exe
 
 all: $(TARGET)
 
