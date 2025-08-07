@@ -12,7 +12,7 @@ if [ ! -s fptst.dek ];
 then
   ./mix -d -m
 fi
-cat cardload.dek a.tra fptst.dek >reader
+cat crld.dek a.tra fptst.dek >reader
 if [ $trace -ne 0 ];
 then
   export MIXTRACE=o
