@@ -20,8 +20,9 @@
  *
  *  TODO
  *  ====
+ *  - macro assembly
+ *  - conditional assembly
  *  - B^E table
- *  - floating-point attachment
  *
  *  Instruction extensions
  *  ======================
@@ -44,6 +45,7 @@
  *  History:
  *  ========
  *  250808AP    punched card code selection
+ *              conditional assembly: IF,IFC,IFD,ELSE,ENDI
  *  250803AP    fixed SaveSTATE/RestoreSTATE
  *              renamed OT to OV
  *              fixed address check in IN/OUT
@@ -3044,6 +3046,8 @@ Toggle UNDSYM;      /* undefined symbol */
 #define EA_INVNUM	'N'
 /* unknown opcode */
 #define EA_UNKOPC	'O'
+/* scope error IF/MACR */
+#define EA_SCOPE    'P'
 /* location out of range */
 #define EA_INVORG	'R'
 /* invalid symbol (eg. 2H in ADDRESS) */
@@ -3171,6 +3175,12 @@ int AsmError(char e)
 		EC[NE++] = e;
     E = ON; T = TOK_ERR;
     return 0;
+}
+
+void GetDelim(char *s, int delim)
+{
+    /* TBD */
+    return;
 }
 
 int GetSym(void)
@@ -3837,12 +3847,34 @@ void DefineLocationSym(Word w, char typ)
         DefineSym(LOCATION, w, ON, typ);
 }
 
+#define MAX_SCOPE  10
+Toggle IFCOND[MAX_SCOPE];
+int NIF;
+int IFNEST;
+
+int GetRel(char *s)
+{
+    static char* rels[] = { "EQ", "NE", "LT", "LE", "GT", "GE", NULL };
+    int i;
+
+    s[2] = 0;
+    for (i = 0; rels[i]; i++) {
+        if (!strcmp(s, rels[i]))
+            return i;
+    }
+    AsmError(EA_UNDSYM);
+    return 0;
+}
+
 int Assemble(const char *line)
 {
-    Word w = 0, OLDP, A, I, F, C;
+    Word v = 0, w = 0, OLDP, A, I, F, C;
     int i, found;
     char needs[3]; /* A|W|S P L */
     char SAV10, SAV15;
+    int rel;
+    Toggle IGNORELOC, COND, DOIFNEST;
+    Comparator ci;
 
     if (!FF || '*' == line[0]) {
         strncpy(LINE, line, MAX_LINE);
@@ -3879,6 +3911,7 @@ int Assemble(const char *line)
     NE = 0; MemSet(EC, ' ', sizeof(EC)-1); FREF = ' ';
     NEEDAWS = 0; NEEDP = 'P'; NEEDL = 0;
     XH = 0;
+    IGNORELOC = OFF; DOIFNEST = OFF;
 
 	OLDP = P;
     if ('*' == LOCATION[0]) {
@@ -3890,7 +3923,63 @@ int Assemble(const char *line)
             DefineLocationSym(w, 'E');
         NEEDAWS = 'W'; NEEDP = 0;
     } else {
-        if (' ' != LOCATION[0])
+        if (!strcmp(OP, "IF  ")) { /* IF rel,expr1,expr2 */
+            IGNORELOC = ON; DOIFNEST = ON;
+            GetSym(); rel = GetRel(S);
+            ENSURE(',');
+            v = Expr(); ENSURE(','); w = Expr();
+            ci = smCMP(v,w);
+            switch (rel) {
+            case 0: /*EQ*/ COND = TONOFF(  EQUAL == ci); break;
+            case 1: /*NE*/ COND = TONOFF(  EQUAL != ci); break;
+            case 2: /*LT*/ COND = TONOFF(   LESS == ci); break;
+            case 3: /*LE*/ COND = TONOFF(GREATER != ci); break;
+            case 4: /*GT*/ COND = TONOFF(GREATER == ci); break;
+            case 5: /*GE*/ COND = TONOFF(   LESS != ci); break;
+            default:
+                COND = OFF;
+            };
+        } else if (!strcmp(OP, "IFC ")) { /* IFC rel,/str1/str2/ */
+            char buf1[MAX_LINE+1], buf2[MAX_LINE+1];
+            IGNORELOC = ON; DOIFNEST = ON;
+            GetSym(); rel = GetRel(S); if (rel > 1) AsmError(EA_UNDSYM);
+            ENSURE(',');
+            i = CH; NEXT();
+            GetDelim(buf1, i); ENSURE(i); GetDelim(buf2, i); ENSURE(i);
+            COND = TONOFF(0 == strcmp(buf1, buf2));
+            if (1 == rel)
+                COND = COND ? OFF : ON;
+        } else if (!strcmp(OP, "IFD ")) { /* IFD sym */
+            IGNORELOC = ON; DOIFNEST = ON;
+            GetSym();
+            COND = TONOFF(0 < FindSym(S));
+        } else if (!strcmp(OP, "ELSE")) {
+            IGNORELOC = ON;
+            if (IFNEST) {
+                if (NIF == IFNEST)
+                    IFCOND[NIF-1] = IFCOND[NIF-1] ? OFF : ON;
+            } else {
+                AsmError(EA_SCOPE);
+            }
+        } else if (!strcmp(OP, "ENDI")) {
+            IGNORELOC = ON;
+            if (0 < IFNEST) {
+                if (NIF == IFNEST)
+                    NIF--;
+                IFNEST--;
+            } else {
+                AsmError(EA_SCOPE);
+            }
+        }
+        if (DOIFNEST) {
+            if (NIF == MAX_SCOPE) {
+                AsmError(EA_SCOPE);
+            } else {
+                IFCOND[NIF++] = COND;
+                IFNEST++;
+            }
+        }
+        if (!IGNORELOC && ' ' != LOCATION[0])
             DefineLocationSym(P, 'L');
         found = FindOp();
         if (found--) {
@@ -4002,6 +4091,7 @@ int Asm(const char *nm)
 
     failed = 0;
     P = 0; OPEND = OFF;
+    NIF = 0; IFNEST = 0;
 
     LNO = 0; 
     while (!feof(fd)) {
