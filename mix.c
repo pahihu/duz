@@ -3847,7 +3847,7 @@ void DefineLocationSym(Word w, char typ)
         DefineSym(LOCATION, w, ON, typ);
 }
 
-#define MAX_SCOPE  10
+#define MAX_SCOPE  11
 Toggle IFCOND[MAX_SCOPE];
 int NIF;
 int IFNEST;
@@ -3873,7 +3873,7 @@ int Assemble(const char *line)
     char needs[3]; /* A|W|S P L */
     char SAV10, SAV15;
     int rel;
-    Toggle IGNORELOC, COND, DOIFNEST;
+    Toggle IGNORELOC, COND, DOIFNEST, SKIP;
     Comparator ci;
 
     if (!FF || '*' == line[0]) {
@@ -3914,17 +3914,12 @@ int Assemble(const char *line)
     IGNORELOC = OFF; DOIFNEST = OFF;
 
 	OLDP = P;
-    if ('*' == LOCATION[0]) {
-        goto Out;
-    }
-    if (!strcmp(OP, "EQU ")) {
-        w = Wvalue();
-        if (' ' != LOCATION[0])
-            DefineLocationSym(w, 'E');
-        NEEDAWS = 'W'; NEEDP = 0;
-    } else {
-        if (!strcmp(OP, "IF  ")) { /* IF rel,expr1,expr2 */
-            IGNORELOC = ON; DOIFNEST = ON;
+
+	SKIP = OFF == IFCOND[NIF];
+    if (!strcmp(OP, "IF  ")) { /* IF rel,expr1,expr2 */
+        IGNORELOC = ON;
+        if (OFF == SKIP) {
+            DOIFNEST = ON;
             GetSym(); rel = GetRel(S);
             ENSURE(',');
             v = Expr(); ENSURE(','); w = Expr();
@@ -3938,32 +3933,43 @@ int Assemble(const char *line)
             case 5: /*GE*/ COND = TONOFF(   LESS != ci); break;
             default:
                 COND = OFF;
-            };
-        } else if (!strcmp(OP, "IFC ")) { /* IFC rel,/str1/str2/ */
-            char buf1[MAX_LINE+1], buf2[MAX_LINE+1];
-            IGNORELOC = ON; DOIFNEST = ON;
+            }
+        }
+    } else if (!strcmp(OP, "IFC ")) { /* IFC rel,/str1/str2/ */
+        char buf1[MAX_LINE+1], buf2[MAX_LINE+1];
+        IGNORELOC = ON;
+        if (OFF == SKIP) {
+            DOIFNEST = ON;
             GetSym(); rel = GetRel(S); if (rel > 1) AsmError(EA_UNDSYM);
             ENSURE(',');
             i = CH; NEXT();
             GetDelim(buf1, i); ENSURE(i); GetDelim(buf2, i); ENSURE(i);
             COND = TONOFF(0 == strcmp(buf1, buf2));
-            if (1 == rel)
+            if (1 == rel) { /*NE*/
                 COND = COND ? OFF : ON;
-        } else if (!strcmp(OP, "IFD ")) { /* IFD sym */
-            IGNORELOC = ON; DOIFNEST = ON;
+            }
+        }
+    } else if (!strcmp(OP, "IFD ")) { /* IFD sym */
+        IGNORELOC = ON;
+        if (OFF == SKIP) {
+            DOIFNEST = ON;
             GetSym();
             COND = TONOFF(0 < FindSym(S));
-        } else if (!strcmp(OP, "ELSE")) {
-            IGNORELOC = ON;
-            if (IFNEST) {
+        }
+    } else if (!strcmp(OP, "ELSE")) {
+        IGNORELOC = ON;
+        if (OFF == SKIP) {
+            if (1 < IFNEST) {
                 if (NIF == IFNEST)
                     IFCOND[NIF-1] = IFCOND[NIF-1] ? OFF : ON;
             } else {
                 AsmError(EA_SCOPE);
             }
-        } else if (!strcmp(OP, "ENDI")) {
-            IGNORELOC = ON;
-            if (0 < IFNEST) {
+        }
+    } else if (!strcmp(OP, "ENDI")) {
+        IGNORELOC = ON;
+        if (OFF == SKIP) {
+            if (1 < IFNEST) {
                 if (NIF == IFNEST)
                     NIF--;
                 IFNEST--;
@@ -3971,14 +3977,27 @@ int Assemble(const char *line)
                 AsmError(EA_SCOPE);
             }
         }
-        if (DOIFNEST) {
-            if (NIF == MAX_SCOPE) {
-                AsmError(EA_SCOPE);
-            } else {
-                IFCOND[NIF++] = COND;
-                IFNEST++;
-            }
+    }
+    if (SKIP)
+        return ON == E;
+    if (DOIFNEST) {
+        if (NIF == MAX_SCOPE) {
+            AsmError(EA_SCOPE);
+        } else {
+            IFCOND[NIF++] = COND;
+            IFNEST++;
         }
+    }
+
+    if ('*' == LOCATION[0]) {
+        goto Out;
+    }
+    if (!strcmp(OP, "EQU ")) {
+        w = Wvalue();
+        if (' ' != LOCATION[0])
+            DefineLocationSym(w, 'E');
+        NEEDAWS = 'W'; NEEDP = 0;
+    } else {
         if (!IGNORELOC && ' ' != LOCATION[0])
             DefineLocationSym(P, 'L');
         found = FindOp();
@@ -4032,6 +4051,8 @@ int Assemble(const char *line)
                 Warning("START ADDRESS IGNORED");
             NEEDAWS = 'S';
             OPEND = ON;
+            if (1 < IFNEST)
+                AsmError(EA_SCOPE);
             if (' ' != LOCATION[0])
             	AsmError(EA_ENDLOC);
         } else
@@ -4091,7 +4112,8 @@ int Asm(const char *nm)
 
     failed = 0;
     P = 0; OPEND = OFF;
-    NIF = 0; IFNEST = 0;
+    /* Scope 0 always ON */
+    IFCOND[0] = ON; NIF = 1; IFNEST = 1;
 
     LNO = 0; 
     while (!feof(fd)) {
@@ -5047,7 +5069,7 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-c bcfimx][-g [unit]][-3][-ad][-s addr][-t aio][-lprvwz][-y symfile] file1...\n");
+	Print("usage: mix [-c <config>][-g [unit]][-6 <cardcode>][-ad][-s addr][-t aio][-lprvwz][-y symfile] file1...\n");
     Print("options:\n");
     Print("    -g [unit]      push GO button on unit (def. card reader)\n");
     Print("    -c bcfimx      MIX config (also from MIXCONFIG env.var):\n");
