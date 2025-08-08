@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *  250808AP    punched card code selection
  *  250803AP    fixed SaveSTATE/RestoreSTATE
  *              renamed OT to OV
  *              fixed address check in IN/OUT
@@ -332,6 +333,8 @@ Toggle TRANS, LNKLD, DUMP;
 #define CARD_MIX360 1
 #define CARD_DEC026 2
 #define CARD_DEC029 3
+#define CARD_SIXBIT 4
+#define CARD_BIC    5
 int CARDCODE;
 char TRANSNM[5+1];
 const char *SYMNM;
@@ -1942,11 +1945,25 @@ IOC
 #define NASCCHARS   256
 /*		                           1         2         3         4         5         6	 */
 /*		                 0123456789012345678901234567890123456789012345678901234567890123*/
-char  knuth_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
-char   stan_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
+char    mix_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
+char mix360_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
 char dec026_m2a[64+1] = " +-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ_=@^'\\?.)]<!:$*[>&;,(\"#%";
 char dec029_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+^!$*);\\],%_>?";
-char *cardcodes[] = { knuth_m2a, stan_m2a, dec026_m2a, dec029_m2a };
+char sixbit_m2a[64+1] = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_";
+char    bic_m2a[64+1] = "0123456789#@?:>}+ABCDEFGHI.[&(<~|JKLMNOPQR$*-);{ /STUVWXYZ,%!=]\"";
+
+struct {
+    const char *opt;
+    const char *m2a;
+} cardcodes[] = {
+    {   "mix",    mix_m2a},
+    {"mix360", mix360_m2a},
+    {"dec026", dec026_m2a},
+    {"dec029", dec029_m2a},
+    {"sixbit", sixbit_m2a},
+    {   "bic",    bic_m2a},
+    {    NULL,       NULL}
+};
 char m2a[64+1], cr_m2a[64];
 Byte a2m[256], cr_a2m[256];
 
@@ -4809,7 +4826,7 @@ void InitMixToAscii(void)
 {
     int i;
 
-    strcpy(m2a, cardcodes[CARDCODE]);
+    strcpy(m2a, cardcodes[CARDCODE].m2a);
     for (i = 0; i < 256; i++) {
         a2m[i] = cr_a2m[i] = 0;
     }
@@ -4951,7 +4968,8 @@ void Usage(void)
     Print("                     m - Mixmaster\n");
     Print("                     x - double/indirect-indexing facility\n");
     Print("\n");
-    Print("    -3             Stanford MIX/360 card codes\n");
+    Print("    -6 mix|mix360|dec026|dec029|sixbit|bic\n");
+    Print("                   select punched card code (def. mix)\n");
     Print("    -a             assemble only\n");
     Print("    -d             dump non-zero locations\n");
     Print("    -l             punch LNKLD cards\n");
@@ -5440,9 +5458,19 @@ int main(int argc, char*argv[])
             continue;
         } 
 		switch (arg[1]) {
-        case '3': CARDCODE = CARD_MIX360; continue;
-        /* case '6': CARDCODE = CARD_DEC026; continue; */
-        /* case '9': CARDCODE = CARD_DEC029; continue; */
+        case '6':
+			if (i + 1 < argc) {
+    			arg = argv[++i];
+                for (j = 0; cardcodes[j].opt; j++) {
+                    if (0 == strcasecmp(cardcodes[j].opt, arg)) {
+                        CARDCODE = j;
+                        break;
+                    }
+                }
+                if (cardcodes[j].opt)
+                    continue;
+			}
+			break;
         case 'c':
 			if (i + 1 < argc) {
                 InitConfig(argv[++i]);
