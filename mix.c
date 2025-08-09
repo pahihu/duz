@@ -21,7 +21,6 @@
  *  TODO
  *  ====
  *  - macro assembly
- *  - conditional assembly
  *  - B^E table
  *
  *  Instruction extensions
@@ -44,6 +43,8 @@
  *
  *  History:
  *  ========
+ *  250809AP    conditional assembly fixes
+ *              macro assembler skeleton
  *  250808AP    punched card code selection
  *              conditional assembly: IF,IFC,IFD,ELSE,ENDI
  *  250803AP    fixed SaveSTATE/RestoreSTATE
@@ -1879,13 +1880,28 @@ void MemMove(Word src, Word dst, int n)
     }
 }
 
-void MemSet(char *s, int ch, int len)
+void StrSet(char *s, int ch, int len)
 {
     int i;
 
     s[len] = 0;
     for (i = 0; i < len; i++)
         s[i] = ch;
+}
+
+void StrCpy(char *d, const char *s, int len)
+{
+    int i;
+
+    d[len] = 0;
+    for (i = 0; *s; i++) {
+        if (len == i)
+            break;
+        d[i] = *s++;
+    }
+    for (; i < len; i++) {
+        d[i] = ' ';
+    }
 }
 
 
@@ -2418,7 +2434,7 @@ void blkRead(int u, Word adr, Byte *cvt)
 	n = Blk_size * BYTES;
     ASSERT(n < MAX_CHAR_BLOCK * BYTES);
     if (DEV_TT == x) {
-        MemSet(tmp, ' ', sizeof(tmp)-1);
+        StrSet(tmp, ' ', sizeof(tmp)-1);
         ptr = fgets(tmp, sizeof(tmp), devs[u].fd);
         if (!ptr || ferror(devs[u].fd))
             goto ErrOut;
@@ -3019,11 +3035,18 @@ int  SX;            /* TOK_SYM FindSym() result */
 Toggle UNDSYM;      /* undefined symbol */
 
 
-#define ENSURE(ch)  \
+#define REQUIRE(ch)  \
     if (ch != CH) { \
         return AsmError(EA_INVCHR); \
     } \
     NEXT();
+
+
+#define ENSURE(ch)  \
+    if (ch != CH) { \
+        AsmError(EA_INVCHR); \
+    } \
+    if (CH) NEXT();
 
 
 /* address has wrong syntax */
@@ -3073,6 +3096,26 @@ struct {
     Toggle D;       /* defined? */
 } syms[NSYMS];
 int nsyms;          /* no. of syms */
+
+typedef struct __MBODY {
+    struct __MBODY *next;
+    char LINE[MAX_LINE+1];
+} MBODY;
+
+#define NMACS       100
+#define NMACNAME      4
+#define NMACARGS     10
+struct {
+    char S[NMACNAME+1];     /* name */
+    int  nargs;             /* #args    */
+    char *args[NMACARGS];   /* arg name */
+    char *dflt[NMACARGS];   /* defaults */
+    MBODY *body;
+} macs[NMACS];
+int nmacs;
+int THEMAC;         /* current MAC def */
+MBODY *LASTBODY;    /* ptr to last macro body line */
+Toggle SAVEBODY;    /* save the body */
 
 #define NLOAD 1500
 Word LOAD[2*NLOAD];
@@ -3179,31 +3222,59 @@ int AsmError(char e)
 
 void GetDelim(char *s, int delim)
 {
-    /* TBD */
+    while (CH && (delim != CH)) {
+        *s++ = CH;
+        NEXT();
+    }
+    *s = 0;
     return;
+}
+
+const char *SBEG, *SEND;
+int GetId(int *ptr_isnum, char *buf, int len)
+{
+    int n, d;
+    int isnum;
+
+    isnum = *ptr_isnum;
+    n = 0; SBEG = SEND = NULL;
+    while (CH && ((d = IsDigit(CH)) || IsAlpha(CH))) {
+        if (!SBEG)
+            SBEG = PLN-1;
+        isnum = isnum && d;
+        if (n < len)
+            buf[n] = CH;
+        n++; NEXT();
+    }
+    *ptr_isnum = isnum;
+    return n;
+}
+
+void GetExtSym(char *s)
+{
+    int isnum;
+
+    if ('(' == CH) {
+        GetDelim(s, ')');
+        ENSURE(')');
+        return;
+    }
+    isnum = 1;
+    GetId(&isnum, s, MAX_LINE);
 }
 
 int GetSym(void)
 {
     int i, n, d, isnum, isfloat, savn;
-    const char *SBEG, *SEND;
 
     if (CH && '*' == CH) {
         NEXT();
         T = TOK_LOC;
         return 0;
     }
-    n = 0;
-    isnum = 1; isfloat = 0; SBEG = SEND = NULL;
-    MemSet(S, ' ', sizeof(S)-1);
-    while (CH && ((d = IsDigit(CH)) || IsAlpha(CH))) {
-        if (!SBEG)
-            SBEG = PLN-1;
-        isnum = isnum && d;
-        if (n < 10)
-            S[n] = CH;
-        n++; NEXT();
-    }
+    isnum = 1; isfloat = 0;
+    StrSet(S, ' ', sizeof(S)-1);
+    n = GetId(&isnum, S, sizeof(S)-1);
     if (isnum && '.' == CH) {
 	    isfloat = 1; isnum = 0; NEXT();
 	    while (CH && (d = IsDigit(CH))) {
@@ -3263,6 +3334,21 @@ int FindOp(void)
             return i+1;
     }
     return 0;
+}
+
+int FindMac(const char *S)
+{
+    int i, found;
+
+    found = 0;
+    for (i = 0; i < nmacs; i++) {
+        if (!strcmp(macs[i].S, S)) {
+            found = i + 1;
+            break;
+        }
+    }
+    TraceA("    FIND.MAC='%s' RESULT=%d", S, found);
+    return found;
 }
 
 int FindSym(const char *S)
@@ -3389,7 +3475,7 @@ void InitLocals(char typ)
 {
     int i;
 
-    MemSet(S, ' ', sizeof(S)-1);
+    StrSet(S, ' ', sizeof(S)-1);
     for (i = 0; i < 10; i++) {
         S[0] = '0' + i;
         S[1] = typ;
@@ -3595,11 +3681,11 @@ Word Apart(void)
 	        /* =123= */
 	        LEND = PLN-1;
             TraceA("    EXPR LEND=%c%s", CH, LEND);
-	        ENSURE('=');
+	        REQUIRE('=');
             if (LEND - LBEG <= 10) {
                 if (UNDSYM)
                     AsmError(EA_UNDSYM);
-                MemSet(S, ' ', sizeof(S)-1);
+                StrSet(S, ' ', sizeof(S)-1);
                 for (i = 0; i < LEND - LBEG; i++)
                     S[i] = LBEG[i];
                 TraceA("    LIT='%s' V=%c%010o", S, PLUS(v), MAG(v));
@@ -3644,7 +3730,7 @@ Word Fpart(Byte C, Word F)
     if ('(' == CH) {
         NEXT();
         v = Expr();
-        ENSURE(')');
+        REQUIRE(')');
     }
     if (v != F && !RANGE(C,042,046)) {
 	    if (!RANGE(v,0,63))
@@ -3743,7 +3829,7 @@ void DefineLiterals(void)
     Word w;
 
     NE = 0;
-    MemSet(EC, ' ', sizeof(EC)-1);
+    StrSet(EC, ' ', sizeof(EC)-1);
     FREF = ' ';
     NEEDP = 'P'; NEEDL = 'L';
     for (i = 0; i < nsyms; i++) {
@@ -3875,11 +3961,12 @@ int Assemble(const char *line)
     int rel;
     Toggle IGNORELOC, COND, DOIFNEST, SKIP;
     Comparator ci;
+    MBODY *body;
 
     if (!FF || '*' == line[0]) {
         strncpy(LINE, line, MAX_LINE);
     } else {
-        MemSet(LINE, ' ', MAX_LINE);
+        StrSet(LINE, ' ', MAX_LINE);
         const char *ptr = line;
         if (' ' != *ptr) {
             ptr = GetWord(&LINE[0], ptr, 10, 0);
@@ -3908,14 +3995,92 @@ int Assemble(const char *line)
     
     PLN = ADDRESS; CH = 1; NEXT();
     E = OFF;
-    NE = 0; MemSet(EC, ' ', sizeof(EC)-1); FREF = ' ';
+    NE = 0; StrSet(EC, ' ', sizeof(EC)-1); FREF = ' ';
     NEEDAWS = 0; NEEDP = 'P'; NEEDL = 0;
     XH = 0;
     IGNORELOC = OFF; DOIFNEST = OFF;
 
 	OLDP = P;
 
-	SKIP = OFF == IFCOND[NIF];
+	SKIP = TONOFF(OFF == IFCOND[NIF-1]);
+    TraceA("SKIP=%s",ONOFF(SKIP));
+    if (!strcmp(OP, "MACR")) { /* NAME MACR P1=V1,...,P10=V10 */
+        char buf[MAX_LINE+1];
+        int nargs = 0;
+
+        if (' ' == LOCATION[0]) {
+            Error("NO MACRO NAME");
+            return AsmError(EA_DUPSYM);
+        }
+        LINE[NMACNAME] = 0;
+        found = FindMac(LOCATION);
+        if (found) {
+            THEMAC = found-1;
+            LASTBODY = macs[THEMAC].body;
+            while (LASTBODY) {
+                body = LASTBODY->next;
+                free(LASTBODY);
+                LASTBODY = body;
+            }
+            macs[THEMAC].body = NULL;
+            for (i = 0; i < macs[THEMAC].nargs; i++) {
+                char *p = macs[THEMAC].args[i];
+                if (p) free(p);
+                p = macs[THEMAC].dflt[i];
+                if (p) free(p);
+            }
+        } else {
+            if (nmacs == NMACS) {
+                Error("MACRO TABLE FULL");
+                return AsmError(EA_DUPSYM);
+            }
+            THEMAC = nmacs++;
+        }
+
+        StrCpy(macs[THEMAC].S, LOCATION, NMACNAME);
+        GetSym();
+        while (T != TOK_MTY) {
+            if (NMACARGS == nargs) {
+                Error("TOO MANY MACRO ARGS");
+                return AsmError(EA_DUPSYM);
+            }
+            macs[THEMAC].args[nargs] = strdup(S);
+            macs[THEMAC].dflt[nargs] = NULL;
+            if ('=' == CH) {
+                GetExtSym(buf);
+                macs[THEMAC].dflt[nargs] = strdup(buf);
+            }
+            nargs++;
+            GetSym();
+        }
+        macs[THEMAC].nargs = nargs;
+
+        SAVEBODY = ON;
+        LASTBODY = NULL;
+    } else if (!strcmp(OP, "ENDM")) {
+        if (THEMAC < 0) {
+            Error("MISSING MACRO DEFINITION");
+            return AsmError(EA_DUPSYM);
+        }
+        IGNORELOC = ON;
+        SAVEBODY = OFF;
+        THEMAC = -1;
+        goto OpEnd;
+    }
+    if (SAVEBODY) {
+        ASSERT(0 <= THEMAC);
+        body = malloc(sizeof(MBODY));
+        if (body) {
+            body->next = NULL;
+            strncpy(body->LINE, LINE, MAX_LINE);
+            if (NULL == LASTBODY) {
+                macs[nmacs].body = body;
+            } else {
+                LASTBODY->next = body;
+            }
+            LASTBODY = body;
+        }
+    }
     if (!strcmp(OP, "IF  ")) { /* IF rel,expr1,expr2 */
         IGNORELOC = ON;
         if (OFF == SKIP) {
@@ -3935,6 +4100,7 @@ int Assemble(const char *line)
                 COND = OFF;
             }
         }
+        IFNEST++;
     } else if (!strcmp(OP, "IFC ")) { /* IFC rel,/str1/str2/ */
         char buf1[MAX_LINE+1], buf2[MAX_LINE+1];
         IGNORELOC = ON;
@@ -3943,12 +4109,14 @@ int Assemble(const char *line)
             GetSym(); rel = GetRel(S); if (rel > 1) AsmError(EA_UNDSYM);
             ENSURE(',');
             i = CH; NEXT();
+            TraceA("IFC DELIM=%c", i);
             GetDelim(buf1, i); ENSURE(i); GetDelim(buf2, i); ENSURE(i);
             COND = TONOFF(0 == strcmp(buf1, buf2));
             if (1 == rel) { /*NE*/
                 COND = COND ? OFF : ON;
             }
         }
+        IFNEST++;
     } else if (!strcmp(OP, "IFD ")) { /* IFD sym */
         IGNORELOC = ON;
         if (OFF == SKIP) {
@@ -3956,26 +4124,26 @@ int Assemble(const char *line)
             GetSym();
             COND = TONOFF(0 < FindSym(S));
         }
+        IFNEST++;
     } else if (!strcmp(OP, "ELSE")) {
         IGNORELOC = ON;
-        if (OFF == SKIP) {
-            if (1 < IFNEST) {
-                if (NIF == IFNEST)
-                    IFCOND[NIF-1] = IFCOND[NIF-1] ? OFF : ON;
+        if (1 < IFNEST) {
+            if (NIF == IFNEST) {
+                IFCOND[NIF-1] = IFCOND[NIF-1] ? OFF : ON;
             } else {
                 AsmError(EA_SCOPE);
             }
+        } else {
+            AsmError(EA_SCOPE);
         }
     } else if (!strcmp(OP, "ENDI")) {
         IGNORELOC = ON;
-        if (OFF == SKIP) {
-            if (1 < IFNEST) {
-                if (NIF == IFNEST)
-                    NIF--;
-                IFNEST--;
-            } else {
-                AsmError(EA_SCOPE);
-            }
+        if (1 < IFNEST) {
+            if (NIF == IFNEST)
+                NIF--;
+            IFNEST--;
+        } else {
+            AsmError(EA_SCOPE);
         }
     }
     if (SKIP)
@@ -3985,9 +4153,10 @@ int Assemble(const char *line)
             AsmError(EA_SCOPE);
         } else {
             IFCOND[NIF++] = COND;
-            IFNEST++;
         }
     }
+    if (IGNORELOC)
+        goto OpEnd;
 
     if ('*' == LOCATION[0]) {
         goto Out;
@@ -4058,6 +4227,7 @@ int Assemble(const char *line)
         } else
             AsmError(EA_UNKOPC);
     }
+OpEnd:
     if (!E && CH && ' ' != CH) {
 	    TraceA("    EXTRA OP ('%c',%d)", CH, CH);
     	AsmError(EA_XTRAOP);
@@ -4109,6 +4279,8 @@ int Asm(const char *nm)
 
     nsyms = 0; nload = 0;
     InitLocalSyms();
+
+    nmacs = 0; LASTBODY = NULL; SAVEBODY = OFF; THEMAC = -1;
 
     failed = 0;
     P = 0; OPEND = OFF;
