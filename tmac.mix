@@ -14,6 +14,7 @@ XYZ        MACR A,B=234,C=(SOMETHING LONG),D=ROOST
 START      LDA  =2=
            IFC  NE,/ALPHA/BETA/
            ADD  =1=
+           XYZ
            ELSE
            SUB  =1=
            ENDI

@@ -45,6 +45,8 @@
  *  ========
  *  250810AP    macro assembler fixes
  *              own malloc/free
+ *				CDC 731 029 code (same ANSI X3.26)
+ *				macro expansion skeleton
  *  250809AP    conditional assembly fixes
  *              macro assembler skeleton
  *  250808AP    punched card code selection
@@ -340,6 +342,7 @@ Toggle TRANS, LNKLD, DUMP;
 #define CARD_DEC029 3
 #define CARD_SIXBIT 4
 #define CARD_BIC    5
+#define CARD_CDC731 6
 int CARDCODE;
 char TRANSNM[5+1];
 const char *SYMNM;
@@ -2014,20 +2017,25 @@ char    mix_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:
 char mix360_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
 char dec026_m2a[64+1] = " +-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ_=@^'\\?.)]<!:$*[>&;,(\"#%";
 char dec029_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+^!$*);\\],%_>?";
+char cdc731_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+!]$*);^\\,%_>?";	/* CDC 731 029 */
 char sixbit_m2a[64+1] = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_";
 char    bic_m2a[64+1] = "0123456789#@?:>}+ABCDEFGHI.[&(<~|JKLMNOPQR$*-);{ /STUVWXYZ,%!=]\"";
 
+
 struct {
+	int idx;
     const char *opt;
     const char *m2a;
 } cardcodes[] = {
-    {   "mix",    mix_m2a},
-    {"mix360", mix360_m2a},
-    {"dec026", dec026_m2a},
-    {"dec029", dec029_m2a},
-    {"sixbit", sixbit_m2a},
-    {   "bic",    bic_m2a},
-    {    NULL,       NULL}
+    {   CARD_MIX,    "mix",    mix_m2a},
+    {CARD_MIX360, "mix360", mix360_m2a},
+    {CARD_DEC026, "dec026", dec026_m2a},
+    {CARD_DEC029, "dec029", dec029_m2a},
+    {CARD_SIXBIT, "sixbit", sixbit_m2a},
+    {   CARD_BIC,    "bic",    bic_m2a},
+    {CARD_CDC731, "cdc731", cdc731_m2a},
+    {CARD_CDC731,   "x326", cdc731_m2a},
+    {         -1,     NULL,       NULL}
 };
 char m2a[64+1], cr_m2a[64];
 Byte a2m[256], cr_a2m[256];
@@ -3397,6 +3405,7 @@ int FindOp(void)
     return 0;
 }
 
+/* find a MACR definition */
 int FindMac(const char *S)
 {
     int i, found;
@@ -3412,6 +3421,7 @@ int FindMac(const char *S)
     return found;
 }
 
+/* find the argument in the current MACRO expansion, return index+1 */
 int FindMacArg(const char *s)
 {
     int i, found;
@@ -3428,6 +3438,33 @@ int FindMacArg(const char *s)
     }
     TraceA("    FIND.MACARG='%s' RESULT=%d", s, found);
     return found;
+}
+
+/* find the argument in the MACRO expansion stack, return 1 if found, d contains the value */
+int FindMacSubst(const char *s, char *d)
+{
+	int i, lvl, nargs, expmac;
+	char *val;
+	
+	i = FindMacArg(s);
+	if (i) {
+		val = MACVALS[i-1];
+		goto Out;
+	}
+	for (lvl = MEXPLVL; lvl > 0; lvl--) {
+		expmac = MEXP[lvl].EXPMAC;
+		nargs = macs[expmac].nargs;
+		for (i = 0; i < nargs; i++) {
+			if (!strcmp(s, macs[expmac].args[i])) {
+				val = MEXP[lvl].VALS[i];
+				goto Out;
+			}
+		}
+	}
+	return 0;
+Out:
+	strcpy(d, val);
+	return 1;
 }
 
 int FindSym(const char *S)
@@ -4157,7 +4194,7 @@ int Assemble(const char *line)
 	SKIP = TONOFF(OFF == IFSCOPE[IFLVL]);
     TraceA("SKIP=%s",ONOFF(SKIP));
     /* check as macro */
-    found = FindMac(OP);
+    found = (OFF == SKIP && 0 == SAVMAC) ? FindMac(OP) : 0;
     if (found) {
         PushMacExp();
         EXPMAC = found;
@@ -4456,6 +4493,63 @@ int StripLine(char *line)
     return n;
 }
 
+int AppendSubst(char *buf, int buflen, const char *word, int maxlen)
+{
+	char subst[MAX_LINE+1];
+	int found, len;
+	const char *val;
+	
+	found = FindMacSubst(word, subst);
+	val = found ? subst : word;
+	TraceA("    SUBST: '%s' => '%s'", word, val);
+	len = strlen(val);
+	if (buflen + len <= maxlen) {
+		memcpy(buf + buflen, val, len);
+	}
+	return buflen + len;
+}
+
+void MacExpand(const char *line, char *buf, int maxlen)
+{
+	int i, j, buflen;
+	char word[MAX_LINE+1];
+	int ch, inside;
+	
+	/* indexes: line[i], word[j], buf[buflen] */
+	TraceA("    MACEXPAND: START '%s'", line);
+	j = 0; inside = 0; buflen = 0;
+	for (i = 0; line[i]; i++) {
+		ch = line[i];
+		if (0 == inside) {
+			if (IsAlpha(ch)) {
+				inside = 1; j = 0;
+			}
+		}
+		if (inside) {
+			if (IsAlpha(ch) || IsDigit(ch)) {
+				word[j] = ch; j++;
+				ch = 0;
+			} else {
+				word[j] = 0;
+				inside = 0; j = 0;
+				buflen = AppendSubst(buf, buflen, word, maxlen);
+			}
+		}
+		if (ch && buflen + 1 <= maxlen) {
+			/* append except separator char */
+			if ('~' != ch) {
+				buf[buflen++] = ch;
+			}
+		}
+	}
+	if (inside) {
+		word[j] = 0;
+		buflen = AppendSubst(buf, buflen, word, maxlen);
+	}
+	buf[buflen] = 0;
+	TraceA("    MACEXPAND: DONE '%s'", buf);
+}
+
 int Asm(const char *nm)
 {
     char line[MAX_LINE+1], path[MAX_LINE+1];
@@ -4490,7 +4584,7 @@ int Asm(const char *nm)
         /* macro expansion */
         if (EXPBDY) {
             ASSERT(EXPMAC);
-            strcpy(line, EXPBDY->LINE);
+            MacExpand(EXPBDY->LINE, line, MAX_LINE);
             EXPBDY = EXPBDY->next;
         } else {
             if (!fgets(line, sizeof(line), fd))
@@ -5449,7 +5543,7 @@ void Usage(void)
     Print("                     m - Mixmaster\n");
     Print("                     x - double/indirect-indexing facility\n");
     Print("\n");
-    Print("    -6 mix|mix360|dec026|dec029|sixbit|bic\n");
+    Print("    -6 bic|cdc731|dec026|dec029|mix|mix360|sixbit|x326\n");
     Print("                   select punched card code (def. mix)\n");
     Print("    -a             assemble only\n");
     Print("    -d             dump non-zero locations\n");
@@ -5941,7 +6035,7 @@ int main(int argc, char*argv[])
     			arg = argv[++i];
                 for (j = 0; cardcodes[j].opt; j++) {
                     if (0 == strcasecmp(cardcodes[j].opt, arg)) {
-                        CARDCODE = j;
+                        CARDCODE = cardcodes[j].idx;
                         break;
                     }
                 }
