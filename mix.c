@@ -316,7 +316,7 @@ static char *sot = " X", *sci = "<=>", *ssta = "HSWNC";
 
 #define CORE_MEM    "core.mem"
 #define CORE_CTL    "core.ctl"
-int MAX_MEM;
+unsigned MAX_MEM;
 #define ADDR_TRACE  (MAX_MEM+1)
 #define TRACE       mem[ADDR_TRACE]
 #define TIMER       mem[MAX_MEM+2]
@@ -344,7 +344,7 @@ const char *SYMNM;
 
 #define TYME_BASE   6
 
-// typedef struct { __uint64 t; } TymeT;
+/* typedef struct { __uint64 t; } TymeT; */
 typedef __uint64 tyme_t;
 typedef __uint64 inst_count_t;
 
@@ -396,13 +396,13 @@ int StripLine(char *line);
 #define	DEV_PT 	8
 
 typedef enum {DO_NOTHING, DO_IOC, DO_IN, DO_OUT, DO_RDY} EventType;
-int EventH, PendingH;
+unsigned EventH, PendingH;
 
 void Schedule(unsigned delta, int u, EventType what, Word M);
-void ScheduleINT(int u);
+void ScheduleINT(unsigned u);
 
-void devError(int u);
-int devStuck(int u);
+void devError(unsigned u);
+int devStuck(unsigned u);
 void Usage(void);
 
 
@@ -1092,12 +1092,12 @@ double FPToDouble2(Word u)
 
     fpFREXP(u, &ue, &uf);
     ue -= FP_Q;
-    // PrintLPT("(%d, %c%010o)\n", ue, PLUS(uf), MAG(uf));
+    /* PrintLPT("(%d, %c%010o)\n", ue, PLUS(uf), MAG(uf)); */
     sign = SIGN(uf); uf = MAG(uf);
-    ue *= 6;    // B^ue
+    ue *= 6;    /* B^ue */
     if (0 == uf)
         return 0.0;
-    // FFFF0
+    /* FFFF0 */
     while (0 == (SM_MSB & uf)) {
         ue--; uf <<= 1;
     }
@@ -1107,7 +1107,7 @@ double FPToDouble2(Word u)
     ret.u = sign ? 1 : 0; ret.u <<= 11;
     ret.u += ue; ret.u <<= 52;
     ret.u += ((__uint64)uf << 20);
-    // PrintLPT("%lo\n", ret.u);
+    /* PrintLPT("%lo\n", ret.u); */
     return ret.d;
 }
 
@@ -1491,7 +1491,7 @@ Word fpMUL(Word u, Word v)
     we = ue + ve - FP_Q;
     smMUL(&hi_wf, &wf, uf, vf);
 
-    // 04 46, 31 46 00 00 00
+    /* 04 46, 31 46 00 00 00 */
     PrintNorm(" W",we,hi_wf,wf);
 
     w = fpNORM(we, hi_wf, wf);
@@ -1950,7 +1950,7 @@ typedef struct __Device {
  *   8: DK0 DK1 DK2 DK3 DK4 DK5 DR6 DR7		 9..16
  *	16: CR  CP  LP  TT  PT					17..21
  */
-int MAX_DEVS;
+unsigned MAX_DEVS;
 Device *devs;
 
 /* 
@@ -2079,10 +2079,10 @@ struct {
 	{   "ptape", TXT_RWRITE,    a2m,    m2a,  1707,  14, 0, 23333,  116667,    0,   23333 },    /* DEV_PT */
 };
 
-int devType(int u);
-void blkSeek(int u, unsigned pos);
-void blkRead(int u, unsigned adr, Byte *cvt);
-void blkWrite(int u, unsigned adr, char *cvt);
+int devType(unsigned u);
+void blkSeek(unsigned u, unsigned pos);
+void blkRead(unsigned u, unsigned adr, Byte *cvt);
+void blkWrite(unsigned u, unsigned adr, char *cvt);
 
 static char *sio_sched[] = {
 	"NOP",
@@ -2100,11 +2100,11 @@ static char *sio[] = {
 	"DOIO.RDY"
 };
 
-int PendingEventH;
+unsigned PendingEventH;
 
-void EventEnQ(int u, unsigned when)
+void EventEnQ(unsigned u, unsigned when)
 {
-	int i, p;
+	unsigned i, p;
 
     i = EventH; p = 0;
     while (i && devs[i-1].when <= when) {
@@ -2142,7 +2142,7 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
 {
     unsigned when;
 
-    ASSERT(0 <= EventH && EventH <= MAX_DEVS);
+    ASSERT(EventH <= MAX_DEVS);
 
     ASSERT(0 != delta);
     ASSERT(0 == devs[u].evtNext);
@@ -2169,14 +2169,14 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     EventEnQ(u, when);
 }
 
-void ScheduleINT(int u)
+void ScheduleINT(unsigned u)
 {
-    int i, p;
+    unsigned i, p;
     unsigned prio;
 
     ASSERT(CONFIG & MIX_INTERRUPT);
 
-    ASSERT(0 <= PendingH && PendingH <= MAX_DEVS);
+    ASSERT(PendingH <= MAX_DEVS);
 
     ASSERT(0 == devs[u].intNext);
 
@@ -2212,7 +2212,7 @@ void ScheduleINT(int u)
     }
 }
 
-void doIO(int u)
+void doIO(unsigned u)
 {
     Word M, LOC, PSAV;
     int x;
@@ -2247,7 +2247,7 @@ void doIO(int u)
         break;
 	case DO_RDY:
 	    if (CONFIG & MIX_INTERRUPT) {
-		    // if I/O initiated in control state and not the RTC
+		    /* if I/O initiated in control state and not the RTC */
 		    if (u && S_CONTROL == devs[u].S) {
 		        if (devs[u].pending) {
 		            Warning("UNO=%02o PENDING INTERRUPT", UNO(u));
@@ -2258,7 +2258,7 @@ void doIO(int u)
         }
 		return;
     }
-    // if not RTC and not stuck
+    /* if not RTC and not stuck */
     if (u && !devStuck(u)) {
 	    Schedule(devs[u].evt, u, DO_RDY, M);
     }
@@ -2284,7 +2284,7 @@ void DoEvents(void)
 	}
     ASSERT(0 != delta);
 
-	// TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when);
+	/* TraceIO("DO EVENTS DELTA=%u WHEN=%u", delta, devs[EventH-1].when); */
 
 	/* process events */
 	DOEVENTS = ON;
@@ -2338,7 +2338,7 @@ void DoInterrupts(void)
     }
 }
 
-int devType(int u)
+int devType(unsigned u)
 {
 	int ret;
 
@@ -2377,17 +2377,17 @@ void UnPack(Word w, Byte *buf)
 	}
 }
 
-void devError(int u)
+void devError(unsigned u)
 {
 	devs[u].evt = DT_STUCK;
 }
 
-int devStuck(int u)
+int devStuck(unsigned u)
 {
     return DT_STUCK == devs[u].evt;
 }
 
-int devBusy(int u)
+int devBusy(unsigned u)
 {
 	int busy;
 
@@ -2411,13 +2411,13 @@ int StripCRLF(char *s, int n)
     return n;
 }
 
-void blkRead(int u, Word adr, Byte *cvt)
+void blkRead(unsigned u, Word adr, Byte *cvt)
 {
 	unsigned ret, n;
-	int i, j, x;
+	int j, x;
     Word mar, w, iobuf[MAX_WORD_BLOCK];
     char tmp[MAX_CHAR_BLOCK * BYTES + 1];
-	unsigned Blk_size;
+	unsigned i, Blk_size;
     char c, *ptr;
 	
 	x = devType(u);
@@ -2477,10 +2477,10 @@ ErrOut:
 	DEV_ErrorLoc(u, adr, "BLKREAD FAILED");
 }
 
-void blkDump(int u, Word adr, Toggle bytes)
+void blkDump(unsigned u, Word adr, Toggle bytes)
 {
-    int i, j, x;
-    unsigned Blk_size;
+    int j, x;
+    unsigned i, Blk_size;
     Word mar, w;
 
 	x = devType(u);
@@ -2509,13 +2509,13 @@ void blkDump(int u, Word adr, Toggle bytes)
     nl();
 }
 
-void blkWrite(int u, unsigned adr, char *cvt)
+void blkWrite(unsigned u, unsigned adr, char *cvt)
 {
 	unsigned ret, n;
-	int i, j, x;
+	int j, x;
     Word mar, w;
     char buf[MAX_CHAR_BLOCK * BYTES + 1 + 1];     /* + CR/LF + NUL */
-	unsigned Blk_size;
+	unsigned i, Blk_size;
     FILE *fd;
 	
 	x = devType(u);
@@ -2565,7 +2565,7 @@ ErrOut:
 }
 
 
-void blkSeek(int u, unsigned pos)
+void blkSeek(unsigned u, unsigned pos)
 {
 	int x;
 	
@@ -2591,7 +2591,7 @@ void blkSeek(int u, unsigned pos)
 }
 
 
-int devOpen(int u)
+int devOpen(unsigned u)
 {
 	int x;
 	char devname[32];
@@ -2643,11 +2643,11 @@ unsigned Diff(unsigned a, unsigned b)
 }
 
 
-unsigned doIOC(int u,int *pM)
+unsigned doIOC(unsigned u,unsigned *pM)
 {
 	int x;
 	int new_pos, old_track, new_track;
-	int M;
+	unsigned M;
 	
 	M = *pM;
 	
@@ -2698,20 +2698,19 @@ ErrOut:
 }
 
 
-void devIOC(int u, int M)
+void devIOC(unsigned u, unsigned M)
 {
     unsigned delta;
 
     delta = doIOC(u, &M);
     if (!devStuck(u)) {
-		// blkSeek(u, M);
 		if (delta)
 			Schedule(delta, u, DO_IOC, M);
     }
 }
 
 
-void devINP(int u, Word M)
+void devINP(unsigned u, Word M)
 {
 	int x;
 	char *errmsg = NULL;
@@ -2735,7 +2734,7 @@ void devINP(int u, Word M)
 			errmsg = "EOT"; goto ErrOut;
 		}
 	} else if (x <= DEV_DR) {
-		int new_pos = 0;
+		unsigned new_pos = 0;
 		delta += doIOC(u, &new_pos);
 		if (!devStuck(u)) {
 			if (delta)
@@ -2746,7 +2745,6 @@ void devINP(int u, Word M)
 		errmsg = "UNSUPPORTED"; goto ErrOut;
 	}
 	if (!devStuck(u)) {
-    	// blkRead(u, MAG(M), cvt);
     	delta += IOchar[x].in_tyme;
     	Schedule(delta, u, DO_IN, M);		
 	}
@@ -2781,7 +2779,7 @@ void devOUT(Word u,Word M)
 		}
 	    devs[u].max_pos = devs[u].pos;
 	} else if (x <= DEV_DR) {
-		int new_pos = 0;
+		unsigned new_pos = 0;
 		delta += doIOC(u, &new_pos);
 		if (!devStuck(u)) {
 			if (delta)
@@ -2798,7 +2796,6 @@ void devOUT(Word u,Word M)
 		errmsg = "UNSUPPORTED"; goto ErrOut;
 	}
 	if (!devStuck(u)) {
-    	// blkWrite(u, M, cvt);
     	delta += IOchar[x].out_tyme;
     	Schedule(delta, u, DO_OUT, M);
 	}
@@ -3056,10 +3053,11 @@ Toggle UNDSYM;      /* undefined symbol */
 
 
 #define ENSURE(ch)  \
-    if (ch != CH) { \
+    { if (ch != CH) { \
         AsmError(EA_INVCHR); \
-    } \
-    if (CH) NEXT();
+      } \
+      if (CH) NEXT(); \
+    }
 
 
 /* address has wrong syntax */
@@ -3199,7 +3197,7 @@ void PunchLinkLoad(FILE *fout)
     char buf[8 + 1];
     Word a, w;
 
-    // LNKLDn  12341234...
+    /* LNKLDn  12341234... */
     for (i = 0; i < nload; i += 18) {
         n = MIN(nload - i, 18);
         fprintf(fout, "LNKLD%d  ", n / 2);
@@ -3349,7 +3347,7 @@ int GetSym(void)
 	    if (1 != sscanf(buf, "%lg", &D))
 		    AsmError(EA_INVNUM);
 	    N = DoubleToFP(D);
-		// Print("BUF='%s' D=%g N=%c%010o\n", buf, D, PLUS(N), MAG(N));
+		/* Print("BUF='%s' D=%g N=%c%010o\n", buf, D, PLUS(N), MAG(N)); */
 	    T = TOK_FLT;
     } else
         T = TOK_SYM;
@@ -3454,11 +3452,12 @@ int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
         if (NULL == S)
             S = syms[found-1].S;
 		islocal = IsLocalSym(S);
-        // TAB ARG
-        // D 	D	DUPSYM
-        // D 	U	ASSERT
-        // U 	D	got value
-        // U 	U	just another ref in the chain, handle elswhere
+        /* TAB ARG
+         * D 	D	DUPSYM
+         * D 	U	ASSERT
+         * U 	D	got value
+         * U 	U	just another ref in the chain, handle elswhere
+         */
         if (syms[found-1].D && defd) {
             syms[found-1].N = w;
             return AsmError(EA_DUPSYM);
@@ -3818,7 +3817,7 @@ Word Fpart(Byte C, Word F)
         REQUIRE(')');
     }
     if (v != F && !RANGE(C,042,046)) {
-	    if (!RANGE(v,0,63))
+	    if (v > 63)
 	        AsmError(EA_TBIGFI);
 	    if (L(v) > R(v))
 	        AsmError(EA_INVFLD);
@@ -3984,11 +3983,11 @@ void ReadSymbols(const char *path)
         ptr = NULL;
         typ = line[0];
         w = strtol(line + 2, &ptr, 8);
-        if ('L' != typ || !RANGE(w,0,MAX_MEM))
+        if ('L' != typ || w > MAX_MEM)
             continue;
-        // +1234567890 SYMBOL
+        /* +1234567890 SYMBOL */
         mapsyms[w] = StrDup(line + 13);
-        // PrintLPT("%c%010o %s\n", PLUS(w), MAG(w), mapsyms[w]);
+        /* PrintLPT("%c%010o %s\n", PLUS(w), MAG(w), mapsyms[w]); */
     }
     fclose(fd);
 }
@@ -4093,8 +4092,8 @@ int Assemble(const char *line)
     if (!FF || '*' == line[0]) {
         strncpy(LINE, line, MAX_LINE);
     } else {
-        StrSet(LINE, ' ', MAX_LINE);
         const char *ptr = line;
+        StrSet(LINE, ' ', MAX_LINE);
         if (' ' != *ptr) {
             ptr = GetWord(&LINE[0], ptr, 10, 0);
         }
@@ -4354,7 +4353,7 @@ int Assemble(const char *line)
             I = Ipart();
             F = Fpart(C,F);
             if (!RANGE(C,042,046)) {
-	            if (!RANGE(I,0,63)) {
+	            if (I > 63) {
 	            	I = BYTE(I); AsmError(EA_TBIGFI);
                 }
 			}
@@ -4501,7 +4500,7 @@ void decode(Word C, Word F)
  		/*011*/"\010SLA SRA SLAXSRAXSLC SRC SLB SRB ",
  		/*012*/"\012JMP JSJ JOV JNOVJL  JE  JG  JGE JNE JLE "
 	};
-	int nf;
+	unsigned nf;
 	char *s;
 	
 	mnemo[0] = '\0';
@@ -4578,7 +4577,7 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
     {
         GetV(M, F, &OP);
         fmt = 'W';
-        // wprint(OP);
+        /* wprint(OP); */
     } else if ((RANGE(C,1,4) && 6 == F)  /*FADD/FSUB/FMUL/FDIV*/
         || (56 == C && 6 == F))     /*FCMP*/
     {
@@ -4592,10 +4591,11 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         isfix = ON;
     } else {
         fmt = 'X';
-	    // xprint(OP);
-        // Print("     ");
+	    /* xprint(OP);
+         * Print("     ");
+         */
     }
-    if ('X' == fmt && RANGE(OP,0,MAX_MEM) && mapsyms[OP]) {
+    if ('X' == fmt && OP <= MAX_MEM && mapsyms[OP]) {
         PrintLPT(mapsyms[OP]); space();
     } else {
         if ('W' == fmt) {
@@ -4980,19 +4980,19 @@ int Step(void)
 		MemWrite(M, F, reg[C - 24]);
 		break;
 	case 34: /*JBUS*/
-        if (!RANGE(F,0,MAX_DEVS-1))
+        if (F > MAX_DEVS-1)
             return FieldError(F);
         w = DEVNO(F);
         devOpen(w);
 		if (devBusy(w)) {
 			if (TYMEWARP) {
-				// busy loop?
+				/* busy loop? */
 				if (M == P) {
 					if (0 == (MIX_INTERRUPT & CONFIG) && devStuck(w)) {
 						/* won't do progress */
 						return MIX_ErrorLoc("UNO%02o STUCK", F);
 					}
-					// head of EventQ in the near future?
+					/* head of EventQ in the near future? */
 					if (EventH && (devs[EventH-1].when <= devs[w].when)) {
 						unsigned evt = devs[w].when - 1;
 						TraceIO("WARP JBUS TYME=%09llu DELTA=%07u", Tyme, evt);
@@ -5009,7 +5009,7 @@ int Step(void)
 	case 35: /*IOC*/
 	case 36: /*IN*/
     case 37: /*OUT*/
-        if (!RANGE(F,0,MAX_DEVS-1))
+        if (F > MAX_DEVS-1)
             return FieldError(F);
         w = DEVNO(F);
 		if (devOpen(w))
@@ -5028,7 +5028,7 @@ int Step(void)
         }
 		break;
 	case 38: /*JRED*/
-        if (!RANGE(F,0,MAX_DEVS-1))
+        if (F > MAX_DEVS-1)
             return FieldError(F);
         w = DEVNO(F);
         devOpen(w);
@@ -5140,8 +5140,7 @@ int Step(void)
 void Run(Word p)
 {
     Word OLDP;
-    unsigned evt;
-    int u;
+    unsigned evt, u;
     unsigned startMS;
 
     startMS = CurrentMS();
@@ -5164,7 +5163,7 @@ void Run(Word p)
             P = OLDP;
             if (TYMEWARP) {
 	            if (EventH) {
-		            // jump to tyme of 1st event
+		            /* jump to tyme of 1st event */
 					evt = devs[EventH-1].when - 1;
 					TraceIO("WARP WAIT TYME=%09llu DELTA=%07u", Tyme, evt);
 					Tyme += evt;
@@ -5182,8 +5181,9 @@ void Run(Word p)
 	        evt = devs[EventH-1].when;
             Tyme += evt; IdleTyme += evt;
             DoEvents();
-            // TBD: if halted then INTs cannot be delivered
-            // DoInterrupts();
+            /* TBD: if halted then INTs cannot be delivered
+             * DoInterrupts();
+             */
         }
         /* wait until all devs are ready */
         evt = 0;
@@ -5218,7 +5218,7 @@ void SaveCore(const char *path, Word *adr, int len, const char *msg)
 
 void Finish(void)
 {
-    int i;
+    unsigned i;
     FILE *fd;
 
     fflush(stderr);
@@ -5244,7 +5244,7 @@ void Finish(void)
 
 void InitMemory(void)
 {
-    int i;
+    unsigned i;
 
     ctlmem = NULL;
     ctlfreq = NULL;
@@ -5385,7 +5385,7 @@ void InitTrace(const char *arg)
 
 void Init(void)
 {
-	int i;
+	unsigned i;
 
 	InstCount = 0;
 	Tyme = 0; IdleTyme = 0;
@@ -5452,7 +5452,7 @@ void Usage(void)
 }
 
 
-void Go(int d)
+void Go(unsigned d)
 {
     int x;
 
@@ -5461,7 +5461,7 @@ void Go(int d)
 
     x = devType(d);
 
-	if (d < 0 || d >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
+	if (d >= MAX_DEVS || DEV_CP == x || DEV_LP == x || DEV_TT == x)
 		Usage();
 
 	devINP(d, 0);
@@ -5487,8 +5487,9 @@ void Stats(FILE *fd, int STRIDE, Word dotrans)
     int prev_i, i, j, minj, maxj;
     unsigned emit, prev_emit;
     FILE *LPTSAV;
-    int MIN_MEM;
+    int MinMem, MaxMem;
 
+	MaxMem = MAX_MEM;
     LPTSAV = LPT; LPT = fd;
     if (!dotrans) {
         nl();
@@ -5502,10 +5503,10 @@ void Stats(FILE *fd, int STRIDE, Word dotrans)
     }
 
     prev_emit = 0; prev_i = 0;
-    MIN_MEM = (CONFIG & MIX_INTERRUPT) ? -MAX_MEM : 0;
-    for (i = MIN_MEM; i <= MAX_MEM; i += STRIDE) {
+    MinMem = (CONFIG & MIX_INTERRUPT) ? -MaxMem : 0;
+    for (i = MinMem; i <= MaxMem; i += STRIDE) {
         emit = 0; minj = STRIDE; maxj = 0;
-        for (j = 0; (i + j <= MAX_MEM) && (j < STRIDE); j++) {
+        for (j = 0; (i + j <= MaxMem) && (j < STRIDE); j++) {
             Word mag = MemRead(i2w(i + j));
             if (mag) {
                 if (j < minj)
@@ -5550,7 +5551,7 @@ void Stats(FILE *fd, int STRIDE, Word dotrans)
             PrintLPT("%04o: ", i);
             for (j = 0; j < STRIDE; j++) {
                 a = i + j;
-                if (i + j <= MAX_MEM)
+                if (i + j <= MaxMem)
                     wprint(MemRead(i2w(i + j)));
                 else
                     PrintLPT("       ");
@@ -5558,7 +5559,7 @@ void Stats(FILE *fd, int STRIDE, Word dotrans)
             PrintLPT("     ");
             for (j = 0; j < STRIDE; j++) {
                 a = i + j;
-                if (a <= MAX_MEM)
+                if (a <= MaxMem)
                     PrintLPT(" %05d", (a < 0 ? ctlfreq : freq)[ABS(a)]);
                 else
                     PrintLPT("      ");
@@ -5793,7 +5794,7 @@ void TestFP(void)
             for (j = 1; j <= 7; j++) {
                 Word w = ret[j-1];
                 char *ptr = buf + 10 * j;
-                // sprintf(ptr , "%010d", MAG(w));
+                /* sprintf(ptr , "%010d", MAG(w)); */
                 utoa(ptr, 10, MAG(w));
                 OverPunch(ptr + 9, SIGN(w), MAG(w));
             }
@@ -5866,7 +5867,7 @@ void TestFP(void)
     TestFPOp('*', bincmp);
     TestFPOp('-', bincmp);
     TestFPOp('+', bincmp);
-    // TestFPOp('?', bincmp);
+    /* TestFPOp('?', bincmp); */
 
     exit(0);
 }
