@@ -4,10 +4,10 @@ CC = gcc
 OPT = -g
 # MATH = -ffloat-store -frounding-math
 MATH = -frounding-math
-WARN = -Wno-error=long-long -Wno-long-long -Wno-error=format-overflow= -Wno-format-overflow
+WARN = -Wno-error=long-long -Wno-long-long -Wno-error=format-overflow -Wno-format-overflow
 OS = -DWIN32
 CFLAGS = -ansi -pedantic -Wall -Wextra -Werror $(WARN) $(OS) $(OPT) $(MATH)
-LDFLAGS = -g3
+LDFLAGS = -g
 SRCS = mix.c
 OBJS = $(SRCS:.c=.o)
 

@@ -1,0 +1,36 @@
+*...+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8
+*LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
+A          EQU  1
+B          EQU  2
+           ORIG 100
+XYZ        MACR A,B=234,C=(SOMETHING LONG),D=ROOST
+           CON  2222
+           IFD  HARAKIRI
+           CON  3456
+           ELSE
+           ALF  ZANZA
+           ENDI
+           ENDM
+START      LDA  =2=
+           IFC  NE,/ALPHA/BETA/
+           ADD  =1=
+           ELSE
+           SUB  =1=
+           ENDI
+           IF   EQ,A,B
+           INCA 1
+           ELSE
+           IF   GE,1-1+1,1
+           CON  1234
+           IFD  C
+           ALF  C DEF
+           ELSE
+           ALF  C UND
+           ENDI
+           ELSE
+           CON  4321
+           ENDI
+           DECA 1
+           ENDI
+           HLT
+           END  START
