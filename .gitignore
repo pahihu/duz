@@ -9,3 +9,7 @@ core.mem
 core.ctl
 *~
 *.*~
+reader
+punch
+printer
+version.h
