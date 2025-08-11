@@ -15,15 +15,18 @@ TARGET = mix_ape.exe
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): version.h $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lm
+
+version.h: $(SRCS)
+	echo "#define MIX_VERSION \"`date +%Y-%m-%d`\"" >version.h
 
 fpexptab: fpexptab.o
 	$(CC) $(LDFLAGS) -o $@ fpexptab.o -lm
 
 clean:
 	$(RM) fpexptab fpexptab.o
-	$(RM) $(TARGET)
+	$(RM) $(TARGET) version.h
 	$(RM) $(OBJS)
 	$(RM) *.prn *.log *.tra *.tre
 

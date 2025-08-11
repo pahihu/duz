@@ -46,6 +46,7 @@
  *  250811AP    renamed smDADD to smLADD
  *              added LADD, LSUB (F=0:7), LCMP (F=0:7)
  *              added DADD, DSUB, DMUL, DDIV, DCMP (F=1:0) skeletons
+ *              added version string
  *  250810AP    macro assembler fixes
  *              own malloc/free
  *				CDC 731 029 code (same ANSI X3.26)
@@ -187,6 +188,8 @@
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+
+#include "version.h"
 
 #if defined(__linux__) || defined(__APPLE__) || defined(__COSMOPOLITAN__)
 typedef unsigned long __uint64;
@@ -5654,7 +5657,8 @@ void Init(void)
 
 void Usage(void)
 {
-	Print("usage: mix [-c <config>][-g [unit]][-6 <cardcode>][-ad][-s addr][-t aio][-lprvwz][-y symfile] file1...\n");
+	Print("  usage: mix [-c <config>][-g [unit]][-6 <cardcode>][-ad][-s addr][-t aio][-lprvwz][-y symfile] file1...\n");
+    Print("version: %s\n", MIX_VERSION);
     Print("options:\n");
     Print("    -g [unit]      push GO button on unit (def. card reader)\n");
     Print("    -c bcfimx      MIX config (also from MIXCONFIG env.var):\n");
