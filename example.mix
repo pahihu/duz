@@ -12,7 +12,8 @@ START      IN   BUFFER(READER)
 2H         EQU  10
 2H         MOVE 2F(2B)
 2H         EQU  2B-3
-           STZ  BUFFER+2(1:2)
+*           STZ  BUFFER+2(1:2)
+           STZ  BUFFER(1:2)
            OUT  BUFFER(PRINTER)
            HLT  *
 BUFFER     ORIG *+24

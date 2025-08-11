@@ -49,6 +49,7 @@
  *              added version string
  *              macro expand fixes
  *              added MIXAL error codes
+ *              fixed verbose, simplified local symbols
  *  250810AP    macro assembler fixes
  *              own malloc/free
  *				CDC 731 029 code (same ANSI X3.26)
@@ -3190,6 +3191,12 @@ struct {
 } syms[NSYMS];
 int nsyms;          /* no. of syms */
 
+#define MAX_SCOPE   10
+struct {
+    Word B, H, F;
+} locals[10 * MAX_SCOPE];
+int locbase;
+
 typedef struct __MBODY {
     struct __MBODY *next;
     char LINE[MAX_LINE+1];
@@ -3580,6 +3587,23 @@ int IsLocalSym(const char *s)
     return IsDigit(ch1) && ('H' == ch2 || 'B' == ch2 || 'F' == ch2) && (' ' == ch3);
 }
 
+
+int ResolveAdr(Word adr, Word w)
+{
+    if (SM_NOADDR != adr) {
+	    if (nload >= NLOAD) {
+            AsmError(EA_TABFUL);
+		    return AsmError(EA_LINKLD);
+	    }
+		LOAD[nload++] = adr;
+		LOAD[nload++] = w;
+        if (!LNKLD && LinkLoad(adr, w))
+            AsmError(EA_LINKLD);
+	}
+    return 0;
+}
+
+
 int LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
 int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
@@ -3587,11 +3611,15 @@ int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
 	Toggle islocal;
 	Word adr;
 
+    ASSERT(found || (!found && S));
+
+    if (found && NULL == S)
+        S = syms[found-1].S;
+    islocal = IsLocalSym(S);
+    ASSERT(!islocal);
+
 	adr = SM_NOADDR;
     if (found) {
-        if (NULL == S)
-            S = syms[found-1].S;
-		islocal = IsLocalSym(S);
         /* TAB ARG
          * D 	D	DUPSYM
          * D 	U	ASSERT
@@ -3605,29 +3633,12 @@ int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
         ASSERT(OFF == syms[found-1].D && ON == defd);
 	    N = syms[found-1].N;
 	    TraceA("    %s '%s' DEFINED %c%05o (CHAIN %c%05o)",
-	        	islocal ? " LOCAL.SYM" : "FUTURE.REF", S, PLUS(w), MAG(w), PLUS(N), MAG(N));
-        if (islocal) {
-	        ASSERT('B' != S[1]);
-	        if ('F' == S[1]) {
-		       	adr = syms[found-1].N;
-	        }
-       	} else {
-	        LREF = adr = syms[found-1].A = syms[found-1].N;
-	        FREF = 'L';
-        }
+	            "FUTURE.REF", S, PLUS(w), MAG(w), PLUS(N), MAG(N));
+	    LREF = adr = syms[found-1].A = syms[found-1].N;
+	    FREF = 'L';
         syms[found-1].N = w;
         syms[found-1].D = ON;
-        if (SM_NOADDR != adr) {
-	        if (nload >= NLOAD) {
-                AsmError(EA_TABFUL);
-		        return AsmError(EA_LINKLD);
-	        }
-			LOAD[nload++] = adr;
-			LOAD[nload++] = w;
-            if (!LNKLD && LinkLoad(adr, w))
-                AsmError(EA_LINKLD);
-		}
-        return 0;
+        return ResolveAdr(adr, w);
     }
     ASSERT(NULL != S);
     if (NSYMS == nsyms) {
@@ -3659,25 +3670,65 @@ int DefineSym(const char *S, Word w, Toggle defd, char typ)
     return DefineSymIdx(found, S, w, defd, typ);
 }
 
-void InitLocals(char typ)
+int localIdx(const char *s)
 {
-    int i;
+    ASSERT(IsLocalSym(s));
 
-    StrSet(S, ' ', sizeof(S)-1);
-    for (i = 0; i < 10; i++) {
-        S[0] = '0' + i;
-        S[1] = typ;
-        DefineSym(S, SM_NOADDR, OFF, 'H');
+    return locbase + s[0] - '0';
+}
+
+Word getLocal(const char *s)
+{
+    int x;
+    Word ret;
+
+    x = localIdx(s);
+    ret = SM_NOADDR;
+
+    switch (s[1]) {
+    case 'B': ret = locals[x].B; break;
+    case 'H': ret = locals[x].H; break;
+    case 'F': ret = locals[x].F; break;
+    default:
+        ASSERT(OFF);
+    }
+
+    return ret;
+}
+
+void setLocal(const char *s, Word w)
+{
+    int x;
+
+    x = localIdx(s);
+
+    switch (s[1]) {
+    case 'B': locals[x].B = w; break;
+    case 'H': locals[x].H = w; break;
+    case 'F': locals[x].F = w; break;
+    default:
+        ASSERT(OFF);
     }
 }
 
-int ShowLocal(int i)
+int ShowLocal(int i, char typ)
 {
-    if (syms[i].D) {
-        space(); dprin(i); prin(syms[i].S); space();
-        wprint(syms[i].N);
+    Word adr;
+    char s[3];
+    Toggle defd;
+
+    s[0] = '0' + i;
+    s[1] = typ;
+    s[2] = 0;
+
+    adr = getLocal(s);
+    defd = TONOFF(SM_NOADDR != adr);
+
+    if (defd) {
+        space(); dprin(i); prin(s); space();
+        wprint(adr);
     }
-    return syms[i].D;
+    return defd;
 }
 
 void ShowLocalSyms(const char *msg)
@@ -3686,9 +3737,9 @@ void ShowLocalSyms(const char *msg)
 
     TraceA("**** LOCALS %s ****", msg);
     for (i = 0; i < 10; i++) {
-        d  = ShowLocal(i);
-        d += ShowLocal(i + 10);
-        d += ShowLocal(i + 20);
+        d  = ShowLocal(i, 'B');
+        d += ShowLocal(i, 'H');
+        d += ShowLocal(i, 'F');
         if (d) nl();
     }
     TraceA("****************");
@@ -3696,9 +3747,13 @@ void ShowLocalSyms(const char *msg)
 
 void InitLocalSyms(void)
 {
-    InitLocals('B');
-    InitLocals('H');
-    InitLocals('F');
+    int i;
+
+    for (i = locbase; i < locbase + 10; i++) {
+        locals[i-locbase].B = SM_NOADDR;
+        locals[i-locbase].H = SM_NOADDR;
+        locals[i-locbase].F = SM_NOADDR;
+    }
 }
 
 void ShowMacDef(int x)
@@ -3735,24 +3790,6 @@ void ShowMacExp(int x)
     Info("****************");
 }
 
-int localSymIdx(const char *s, char typ)
-{
-    int x;
-
-    ASSERT(IsLocalSym(s));
-
-    x = 0;
-    switch (typ) {
-    case 'B': x = 0; break;
-    case 'H': x = 10; break;
-    case 'F': x = 20; break;
-    default:
-        ASSERT(OFF);
-    }
-    /* result is like FindSym() */
-    return 1 + x + s[0] - '0';
-}
-
 Word AtomicExpr(void)
 {
     int found;
@@ -3777,9 +3814,19 @@ Word AtomicExpr(void)
     case TOK_SYM:
         localB = OFF;
         if (IsLocalSym(S)) {
+            int x = localIdx(S);
             if ('H' == S[1])
                 AsmError(EA_INVSYM);
             localB = TONOFF('B' == S[1]);
+            ret = localB ? locals[x].B : locals[x].F;
+            if (SM_NOADDR == ret) {
+                if (localB)
+                    AsmError(EA_UNDBCK);
+                UNDSYM = ON;
+            }
+            TraceA("    ATOMICEXPR=%c%010o", PLUS(ret), MAG(ret));
+            SX = x + 1;
+            return ret;
         }
         SX = found = FindSym(S);
         if (found) {
@@ -3916,10 +3963,16 @@ Word Apart(void)
 	        	AsmError(EA_MAXLEN);
 	    }
         if (UNDSYM) {
+            int islocal = IsLocalSym(S);
             if (SX) {
                 /* already defined future.ref */
-                v = syms[SX-1].N;
-                syms[SX-1].N = P;
+                if (islocal) {
+                    v = getLocal(S);
+                    setLocal(S, P);
+                } else {
+                    v = syms[SX-1].N;
+                    syms[SX-1].N = P;
+                }
             } else {
                 /* future.ref */
                 DefineSym(S, P, OFF, 'L');
@@ -4133,24 +4186,21 @@ void ReadSymbols(const char *path)
 int XH;
 void DefineLocationSym(Word w, char typ)
 {
-    int xb, xf;
 
     if (IsLocalSym(LOCATION)) {
+        int x = localIdx(LOCATION);
         if ('H' != LOCATION[1])
             AsmError(EA_INVSYM);
-        xb = localSymIdx(LOCATION, 'B');
-        XH = localSymIdx(LOCATION, 'H');
-        xf = localSymIdx(LOCATION, 'F');
-        if (OFF == syms[xb-1].D) {
-            syms[xb-1].N = syms[XH-1].N;
-            syms[xb-1].D = syms[XH-1].D;
+        
+        if (SM_NOADDR == locals[x].B) {
+            locals[x].B = locals[x].H;
         }
-        if (SM_NOADDR != syms[xf-1].N) {
-            DefineSymIdx(xf, NULL, w, ON, 'H');
-            syms[xf-1].N = SM_NOADDR;
-            syms[xf-1].D = OFF;
+        if (SM_NOADDR != locals[x].F) {
+            ResolveAdr(locals[x].F, w);
+            locals[x].F = SM_NOADDR;
         }
-        DefineSymIdx(XH, NULL, w, ON, 'H');
+        XH = x+1;
+        locals[x].H = w;
     } else
         DefineSym(LOCATION, w, ON, typ);
 }
@@ -4557,11 +4607,9 @@ OpEnd:
     	AsmError(EA_XTRAOP);
 	}
     if (XH) {
-        int xb = localSymIdx(LOCATION, 'B');
-        syms[xb-1].N = syms[XH-1].N;
-        syms[xb-1].D = syms[XH-1].D;
-        syms[XH-1].N = SM_NOADDR;
-        syms[XH-1].D = OFF;
+        XH--;
+        locals[XH].B = locals[XH].H;
+        locals[XH].H = SM_NOADDR;
         XH = 0;
     }
 Out:
@@ -4658,7 +4706,7 @@ int Asm(const char *nm)
     }
     Info("PROCESSING %s", path);
 
-    nsyms = 0; nload = 0;
+    nsyms = 0; nload = 0; locbase = 0;
     InitLocalSyms();
 
     /* Scope 0 always ON, IFLVL points to IFCOND */
@@ -5656,6 +5704,7 @@ void InitOptions(void)
     NTESTS = 10000L;
     TYMEWARP = OFF;
     DOEVENTS = OFF;
+    VERBOSE = OFF;
 }
 
 void InitConfig(const char *arg)
@@ -5696,7 +5745,6 @@ void Init(void)
     ZERO = 0;
 	STATE = S_HALT; Halt();
 	FLOATOP = OLDFLOATOP = OFF;
-	VERBOSE = OFF;
 
     InitMemory();
     atexit(Finish);
