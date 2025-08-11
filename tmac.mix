@@ -11,9 +11,13 @@ XYZ        MACR A,B=234,C=(SOMETHING LONG),D=ROOST
            ALF  ZANZA
            ENDI
            ENDM
-START      LDA  =2=
+START      ENTA 2
+           ENTX 0
+           LSUB D1
+           LADD D2
            IFC  NE,/ALPHA/BETA/
            ADD  =1=
+           HLT
            XYZ
            ELSE
            SUB  =1=
@@ -33,5 +37,9 @@ START      LDA  =2=
            ENDI
            DECA 1
            ENDI
+D1         CON  0
+           CON  1
+D2         CON  0
+           CON  2
            HLT
            END  START

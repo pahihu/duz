@@ -43,6 +43,8 @@
  *
  *  History:
  *  ========
+ *  250811AP    renamed smDADD to smLADD
+ *              added LADD, LSUB (F=0:7)
  *  250810AP    macro assembler fixes
  *              own malloc/free
  *				CDC 731 029 code (same ANSI X3.26)
@@ -89,7 +91,7 @@
  *  250706AP    FADD/FMUL/FIX fixes
  *              fixed sign in fpNORM rounding
  *              fixed float parsing
- *              fixed smDADD
+ *              fixed smLADD
  *              added verbose assemble flag
  *              FADD fix + random FP testing
  *              fixed memory-read access check
@@ -1409,7 +1411,7 @@ void uDSUB(unsigned *phi, unsigned *plo, unsigned hiX, unsigned loX, unsigned hi
     *phi = hiX - hiY;
 }
 
-void smDADD(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
+void smLADD(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
 {
     Word hiZ, loZ;
 
@@ -1435,6 +1437,23 @@ void smDADD(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
     uDSUB(&hiZ, &loZ, MAG(hiX), MAG(loX), MAG(hiY), MAG(loY));
     *phi = SIGN(hiX) + hiZ;
     *plo = SIGN(hiX) + loZ;
+}
+
+void smLNEG(Word *phi, Word *plo, Word hi, Word lo)
+{
+    if (SIGN(hi)) {
+        *phi = MAG(hi);
+        *plo = MAG(lo);
+        return;
+    }
+    *phi = SM_SIGN + MAG(hi);
+    *plo = SM_SIGN + MAG(lo);
+}
+
+void smLSUB(Word *phi, Word *plo, Word hiX, Word loX, Word hiY, Word loY)
+{
+    smLNEG(&hiY, &loY, hiY, loY);
+    smLADD(phi, plo, hiX, loX, hiY, loY);
 }
 
 Word fpADD(Word u, Word v)
@@ -1466,7 +1485,7 @@ Word fpADD(Word u, Word v)
 	smSRAX(&hi_wf, &wf, vf, SIGN(vf), ue - ve, SHIFT);
 	PrintNorm(" U", 0, uf, 0);
 	PrintNorm(" V", 0, hi_wf, wf);
-	smDADD(&hi_wf, &wf, hi_wf, wf, uf, 0);
+	smLADD(&hi_wf, &wf, hi_wf, wf, uf, 0);
 	PrintNorm(" W", CY, hi_wf, wf);
 A7:
 	w = fpNORM(we, hi_wf, wf);
@@ -1796,7 +1815,7 @@ int CheckMemAccess(Word a, const char *msg)
 
 int CheckMemRead(Word a)
 {
-    return CheckMemAccess(a, "MEMORY WRITE");
+    return CheckMemAccess(a, "MEMORY READ");
 }
 
 int CheckFetch(Word a)
@@ -2861,6 +2880,9 @@ static struct {
 	{"FSUB", MM(02,06)},
 	{"FMUL", MM(03,06)},
 	{"FDIV", MM(04,06)},
+
+	{"LADD", MM(01,07)},
+	{"LSUB", MM(02,07)},
 
 	{"NUM ", MM(05,00)},
 	{"CHAR", MM(05,01)},
@@ -4608,6 +4630,7 @@ int Asm(const char *nm)
 void decode(Word C, Word F)
 {
     static char *fpops[] = { "FADD", "FSUB", "FMUL", "FDIV" };
+    static char *lops[] = { "LADD", "LSUB" };
 	static char *regnames = "A123456X";
 	static char *mnemos[] = {
 		/*000*/" NOP ADD SUB MUL DIV \010xxx\011xxxMOVE",
@@ -4628,6 +4651,12 @@ void decode(Word C, Word F)
 	
 	mnemo[0] = '\0';
 	mnemo[4] = '\0';
+    if (7 == F) {
+        if (RANGE(C,1,2)) {
+            strcpy(mnemo, lops[C-1]);
+            return;
+        }
+    }
 	if (6 == F) {
     	if (RANGE(C,1,4)) {
     	    strcpy(mnemo, fpops[C-1]);
@@ -4693,7 +4722,11 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
     OLDFLOATOP = FLOATOP; FLOATOP=OFF;
 
     isfix = OFF; fmt = ' ';
-    if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
+    if (RANGE(C,1,2) && 7 == F)    /*LADD/LSUB*/
+    {
+        fmt = 'W';
+        OP = M;
+    } else if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
         || RANGE(C,8,23)
         || (56 == C && 6 != F)      /*!FCMP*/
         || RANGE(C,57,63))
@@ -4858,7 +4891,7 @@ A2:
 int Step(void)
 {
 	Word A, I, F, C, M;
-	Word w;
+	Word w, wlo;
 	int cond;
     unsigned x;
 
@@ -4897,12 +4930,25 @@ int Step(void)
 	case 1: /*ADD*/
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) { /*FADD*/
+        switch (F) {
+        case 6: /*FADD*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpADD(rA, MemRead(M));
 			Tyme += 2; IncTIMER(2);
-	    } else {
+            break;
+        case 7: /*LADD*/
+            if (CheckMemRead(M))
+                return 1;
+            w = MemRead(M);
+            smINC(&M);
+            if (CheckMemRead(M))
+                return 1;
+            wlo = MemRead(M);
+            smLADD(&rA, &rX, rA, rX, w, wlo);
+            if (CY) OV = CY;
+            break;
+        default:
             if (GetV(M, F, &w)) {
                 return 1;
             }
@@ -4914,12 +4960,24 @@ int Step(void)
 	case 2: /*SUB*/
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) { /*FSUB*/
+        switch (F) {
+	    case 6: /*FSUB*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpSUB(rA, MemRead(M));
 			Tyme += 2; IncTIMER(2);
-	    } else {
+        case 7: /*LSUB*/
+            if (CheckMemRead(M))
+                return 1;
+            w = MemRead(M);
+            smINC(&M);
+            if (CheckMemRead(M))
+                return 1;
+            wlo = MemRead(M);
+            smLSUB(&rA, &rX, rA, rX, w, wlo);
+            if (CY) OV = CY;
+            break;
+	    default:
             if (GetV(M, F, &w)) {
                 return 1;
             }

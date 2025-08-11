@@ -41,9 +41,9 @@ LOOP       LD3  LOC               rI3 <- LOC.                      ___EJ
            SUB  A1(0:2)           Decrease the count.              _E_BB
            JAP  LOOP              Repeat until the count is zero.  _J_B.
            JMP  READ              Now read a new card.             _A__9      
-           NOP  0                                                  _____
-           NOP  0                                                  _____
-           NOP  0                                                  _____
+           NOP  0                                                  ___E_
+           NOP  0                                                  ___E_
+           NOP  0                                                  ___E_
 *
 * BINARY DUMP ON CARD PUNCH
 *
