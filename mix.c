@@ -44,7 +44,8 @@
  *  History:
  *  ========
  *  250811AP    renamed smDADD to smLADD
- *              added LADD, LSUB (F=0:7)
+ *              added LADD, LSUB (F=0:7), LCMP (F=0:7)
+ *              added DADD, DSUB, DMUL, DDIV, DCMP (F=1:0) skeletons
  *  250810AP    macro assembler fixes
  *              own malloc/free
  *				CDC 731 029 code (same ANSI X3.26)
@@ -2884,6 +2885,11 @@ static struct {
 	{"LADD", MM(01,07)},
 	{"LSUB", MM(02,07)},
 
+	{"DADD", MM(01,010)},
+	{"DSUB", MM(02,010)},
+	{"DMUL", MM(03,010)},
+	{"DDIV", MM(04,010)},
+
 	{"NUM ", MM(05,00)},
 	{"CHAR", MM(05,01)},
 	{"HLT ", MM(05,02)},
@@ -3081,6 +3087,8 @@ static struct {
 	{"CMPX", MM(077,05)},
 
 	{"FCMP", MM(070,06)},
+    {"LCMP", MM(070,07)},
+	{"DCMP", MM(070,010)},
 
     {  NULL, MM(000,00)},
 };
@@ -4629,8 +4637,9 @@ int Asm(const char *nm)
 
 void decode(Word C, Word F)
 {
-    static char *fpops[] = { "FADD", "FSUB", "FMUL", "FDIV" };
-    static char *lops[] = { "LADD", "LSUB" };
+    static char *fpops[]  = { "FADD", "FSUB", "FMUL", "FDIV" };
+    static char *dfpops[] = { "DADD", "DSUB", "DMUL", "DDIV" };
+    static char *lops[]   = { "LADD", "LSUB" };
 	static char *regnames = "A123456X";
 	static char *mnemos[] = {
 		/*000*/" NOP ADD SUB MUL DIV \010xxx\011xxxMOVE",
@@ -4651,21 +4660,32 @@ void decode(Word C, Word F)
 	
 	mnemo[0] = '\0';
 	mnemo[4] = '\0';
-    if (7 == F) {
+    switch (F) {
+    case 6: /*Fxxx*/
+        if (RANGE(C,1,4)) {
+            strcpy(mnemo, fpops[C-1]);
+            return;
+	    } else if (56 == C) {
+            strcpy(mnemo, "FCMP");
+            return;
+        }
+        break;
+    case 7: /*Lxxx*/
         if (RANGE(C,1,2)) {
             strcpy(mnemo, lops[C-1]);
             return;
         }
-    }
-	if (6 == F) {
+        break;
+    case 8: /*Dxxx*/
     	if (RANGE(C,1,4)) {
-    	    strcpy(mnemo, fpops[C-1]);
+            strcpy(mnemo, dfpops[C-1]);
     	    return;
 	    } else if (56 == C) {
-    	    strcpy(mnemo, "FCMP");
+            strcpy(mnemo, "DCMP");
     	    return;
 	    }
-	}
+        break;
+    }
 	s = mnemos[C / 8];
 	if (' ' == *s) {
 		s++;
@@ -4722,24 +4742,25 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
     OLDFLOATOP = FLOATOP; FLOATOP=OFF;
 
     isfix = OFF; fmt = ' ';
-    if (RANGE(C,1,2) && 7 == F)    /*LADD/LSUB*/
+    if ((RANGE(C,1,2) && (7 == F))              /*LADD/LSUB*/
+        || (RANGE(C,1,4) && (8 == F))           /*DADD/DSUB/DMUL/DDIV*/
+        || (56 == C && (7 == F || 8 == F)))     /*LCMP/DCMP*/
     {
-        fmt = 'W';
+        fmt = 'X';
         OP = M;
-    } else if ((RANGE(C,1,4) && 6 != F)    /*!FADD/FSUB/FMUL/FDIV*/
-        || RANGE(C,8,23)
-        || (56 == C && 6 != F)      /*!FCMP*/
-        || RANGE(C,57,63))
-    {
-        GetV(M, F, &OP);
-        fmt = 'W';
-        /* wprint(OP); */
-    } else if ((RANGE(C,1,4) && 6 == F)  /*FADD/FSUB/FMUL/FDIV*/
-        || (56 == C && 6 == F))     /*FCMP*/
+    } else if ((RANGE(C,1,4) && 6 == F)         /*FADD/FSUB/FMUL/FDIV*/
+        || (56 == C && 6 == F))                 /*FCMP*/
     {
         d = FPToDouble(MemRead(M));
         dprint(d);
         FLOATOP=ON;
+    } else if (RANGE(C,1,4)
+        || RANGE(C,8,23)
+        || (56 == C)
+        || RANGE(C,57,63))
+    {
+        GetV(M, F, &OP);
+        fmt = 'W';
     } else if (5 == C && 7 == F) {  /*FIX*/
         d = FPToDouble(rA);
         dprint(d);
@@ -4747,9 +4768,6 @@ N1234 1234 +1234 56 78 90 CODE +1234567890 +1234567890 +1234567890 +1234 +1234 +
         isfix = ON;
     } else {
         fmt = 'X';
-	    /* xprint(OP);
-         * Print("     ");
-         */
     }
     if ('X' == fmt && OP <= MAX_MEM && mapsyms[OP]) {
         PrintLPT(mapsyms[OP]); space();
@@ -4927,19 +4945,17 @@ int Step(void)
 	switch (C) {
 	case 0: /*NOP*/
 		break;
-	case 1: /*ADD*/
+	case 1:
 	    if (CheckMemRead(M))
 	        return 1;
         switch (F) {
-        case 6: /*FADD*/
+        case 06: /*FADD*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpADD(rA, MemRead(M));
 			Tyme += 2; IncTIMER(2);
             break;
-        case 7: /*LADD*/
-            if (CheckMemRead(M))
-                return 1;
+        case 07: /*LADD*/
             w = MemRead(M);
             smINC(&M);
             if (CheckMemRead(M))
@@ -4948,27 +4964,32 @@ int Step(void)
             smLADD(&rA, &rX, rA, rX, w, wlo);
             if (CY) OV = CY;
             break;
-        default:
+        case 010: /*DADD*/
+            if (CheckFloatOption())
+                return 1;
+            return FieldError(F);
+            break;
+        default: /*ADD*/
             if (GetV(M, F, &w)) {
                 return 1;
             }
             w = smADD(rA, w); if (CY) OV = CY;
     		if (!MAG(w)) w += SIGN(rA);
     		rA = w;
+            break;
 		}
 		break;
-	case 2: /*SUB*/
+	case 2:
 	    if (CheckMemRead(M))
 	        return 1;
         switch (F) {
-	    case 6: /*FSUB*/
+	    case 06: /*FSUB*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpSUB(rA, MemRead(M));
 			Tyme += 2; IncTIMER(2);
-        case 7: /*LSUB*/
-            if (CheckMemRead(M))
-                return 1;
+            break;
+        case 07: /*LSUB*/
             w = MemRead(M);
             smINC(&M);
             if (CheckMemRead(M))
@@ -4977,44 +4998,66 @@ int Step(void)
             smLSUB(&rA, &rX, rA, rX, w, wlo);
             if (CY) OV = CY;
             break;
-	    default:
+        case 010: /*DSUB*/
+            if (CheckFloatOption())
+                return 1;
+            return FieldError(F);
+            break;
+	    default: /*SUB*/
             if (GetV(M, F, &w)) {
                 return 1;
             }
             rA = smSUB(rA, w); if (CY) OV = CY;
+            break;
         }
 		break;
-	case 3: /*MUL*/
+	case 3:
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) { /*FMUL*/
+        switch (F) {
+	    case 06: /*FMUL*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpMUL(rA, MemRead(M));
 			Tyme += 7; IncTIMER(7);
-	    } else {
+            break;
+        case 010: /*DMUL*/
+            if (CheckFloatOption())
+                return 1;
+            return FieldError(F);
+            break;
+	    default: /*MUL*/
             if (GetV(M, F, &w)) {
                 return 1;
             }
     		smMUL(&rA, &rX, rA, w);
 			Tyme += 8; IncTIMER(8);
+            break;
 		}
 		break;
-	case 4: /*DIV*/
+	case 4:
 	    if (CheckMemRead(M))
 	        return 1;
-	    if (6 == F) { /*FDIV*/
+        switch (F) {
+	    case 06: /*FDIV*/
     	    if (CheckFloatOption())
     	        return 1;
             rA = fpDIV(rA, MemRead(M));
 			Tyme += 9; IncTIMER(9);
-	    } else {
+            break;
+        case 010: /*DDIV*/
+            if (CheckFloatOption())
+                return 1;
+            return FieldError(F);
+            break;
+	    default: /*DIV*/
             if (GetV(M, F, &w)) {
                 return 1;
             }
     		smDIV(&rA, &rX, rA, rX, w);
 			Tyme += 10; IncTIMER(10);
-		}
+            break;
+        }
 		break;
 	case 5:
 		{	Word signA, signX;
@@ -5299,16 +5342,37 @@ int Step(void)
 	case 56: case 57: case 58: case 59: case 60: case 61: case 62: case 63: /*CMPr*/
 	    if (CheckMemRead(M))
     	    return 1;
-	    if (6 == F) { /*FCMP*/
+        switch (F) {
+	    case 06: /*FCMP*/
     	    if (CheckFloatOption())
     	        return 1;
             fpCMP(rA, MemRead(M));
 			Tyme += 2; IncTIMER(2);
-	    } else {
+            break;
+        case 07: /*LCMP*/
+            w = MemRead(M);
+            smINC(&M);
+            if (CheckMemRead(M))
+                return 1;
+            wlo = MemRead(M);
+            smLSUB(&w, &wlo, rA, rX, w, wlo);
+            if (!MAG(w) && !MAG(wlo))
+                CI = EQUAL;
+            else {
+                CI = CY ? LESS : GREATER;
+            }
+            break;
+        case 010: /*DCMP*/
+            if (CheckFloatOption())
+                return 1;
+            return FieldError(F);
+            break;
+	    default:
             if (GetV(M, F, &w)) {
                 return 1;
             }
             CI = smCMP(field(reg[C - 56], F), w);
+            break;
 		}
 		break;
 	}
