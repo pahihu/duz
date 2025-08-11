@@ -5,20 +5,36 @@ B          EQU  2
            ORIG 100
 XYZ        MACR A,B=234,C=(SOMETHING LONG),D=ROOST
            CON  2222
-           IFD  HARAKIRI
-           CON  3456
+           IFD  A
+           CON  3~B
            ELSE
            ALF  ZANZA
            ENDI
+           ENDM
+MEX1       MACR INDEX
+           LD~INDEX  TABLE~INDEX
+           ENDM
+MEX2       MACR A=ARRAY,B=(INC6 1),C,D=6
+           ENTA C
+           B
+           STA  A,D
            ENDM
 START      ENTA 2
            ENTX 0
            LSUB D1
            LADD D2
+IDX4       MEX1 INDEX=4
+           MEX1 4
+           MEX1 5
+           MEX2 TABLE,(DEC5 2),,5
+           MEX2 TABLE2
+           MEX2 D=5,A=TABLE,B=(DEC5 2)
+           MEX2 A=TABLE2
            IFC  NE,/ALPHA/BETA/
            ADD  =1=
            HLT
-           XYZ
+           CON  IDX4
+           XYZ  A=A,,B=321
            ELSE
            SUB  =1=
            ENDI
