@@ -43,6 +43,10 @@
  *
  *  History:
  *  ========
+ *  250812AP    internal reorg: replaced sym indexes w/ ptr
+ *              local symbol environment for locals and LOCs
+ *              EQU sets the value, not defines
+ *              detect undefined xF
  *  250811AP    renamed smDADD to smLADD
  *              added LADD, LSUB (F=0:7), LCMP (F=0:7)
  *              added DADD, DSUB, DMUL, DDIV, DCMP (F=1:0) skeletons
@@ -3104,6 +3108,21 @@ static struct {
 
 char mnemo[5];      /* mnemonic */
 
+
+typedef enum {SYM_UNDEF, SYM_LOC, SYM_EQU} SYMTYPE;
+
+typedef struct {
+    char S[10+1];   /* symbol  */
+    SYMTYPE T;      /* type: L - location, E - equ */
+    Word N;         /* value   */
+    Word A;			/* loader addr */
+    Toggle D;       /* defined? */
+} SYM;
+
+typedef struct {
+    Word B, H, F;
+} LOCSYM;
+
 int LNO;            /* line no */
 char LINE[MAX_LINE + 1];  /* curr.line */
 const char *LOCATION, *OP, *ADDRESS;
@@ -3119,7 +3138,8 @@ enum {TOK_ERR, TOK_MTY, TOK_LOC, TOK_NUM, TOK_FLT, TOK_SYM} T; /* token type */
 char S[10 + 1];     /* parsed symbol */
 Word N;             /* parsed number */
 int  B;             /* binary op */
-int  SX;            /* TOK_SYM FindSym() result */
+SYM *XS;            /* TOK_SYM FindSym() result */
+LOCSYM *XL;         /* TOK_SYM FindSym() result if local (xBHF) */
 Toggle UNDSYM;      /* undefined symbol */
 
 
@@ -3182,20 +3202,19 @@ Toggle UNDSYM;      /* undefined symbol */
 
 
 #define NSYMS 1500
-struct {
-    char S[10+1];   /* symbol  */
-    char T;         /* type: H - local, L - location, E - equ */
-    Word N;         /* value   */
-    Word A;			/* loader addr */
-    Toggle D;       /* defined? */
-} syms[NSYMS];
-int nsyms;          /* no. of syms */
+SYM symtab[NSYMS];
+int nsymtab;        /* no. of syms */
 
-#define MAX_SCOPE   10
-struct {
-    Word B, H, F;
-} locals[10 * MAX_SCOPE];
-int locbase;
+#define NLOCSYMS 100
+SYM loctab[NLOCSYMS];
+int loctab0, nloctab;
+
+/* !!! the locals[] stack has the same depth as the MAC stack !!! */
+#define MAX_MACSCOPE 10
+
+#define NLOCALS (10 * MAX_MACSCOPE)
+LOCSYM locals[NLOCALS];
+int locals0;
 
 typedef struct __MBODY {
     struct __MBODY *next;
@@ -3215,11 +3234,12 @@ struct {
 } macs[NMACS+1];
 int nmacs;
 
-#define MAX_MACSCOPE 10
 struct {
     int    EXPMAC;          /* expanding MAC index */
     MBODY *EXPBDY;          /* current BODY line */
     char  *VALS[NMACARGS];
+    int locals0;
+    int loctab0, nloctab;
 } MEXP[MAX_MACSCOPE+1];     /* current MAC expand */
 int MEXPLVL;
 
@@ -3545,37 +3565,51 @@ Out:
 	return 1;
 }
 
-int FindSym(const char *S)
+SYM *FindSymP(const char *S, SYM *syms, int syms0, int nsyms)
 {
-    int i, found;
+    int i;
+    SYM *found;
 
-    found = 0;
-    for (i = 0; i < nsyms; i++) {
+    found = NULL;
+    /* Info("FINDSYMP '%s' %d - %d", S, syms0, nsyms); */
+    for (i = syms0; i < nsyms; i++) {
+        /* Info("FINDSYMP '%s'", syms[i].S); */
         if (!strcmp(syms[i].S, S)) {
-            found = i + 1;
+            found = &syms[i];
             break;
         }
     }
-    TraceA("    FIND.SYM='%s' RESULT=%d", S, found);
+    TraceA("    FIND.SYM='%s' RESULT=%d", S, found ? 1 : 0);
     if (found)
-        TraceA("    N=%d D=%s", w2i(syms[found-1].N), ONOFF(syms[found-1].D));
+        TraceA("    N=%d D=%s", w2i(found->N), ONOFF(found->D));
     return found;
 }
 
-int FindSymByA(Word w)
+SYM *FindSym(const char *S)
 {
-    int i, found;
+    SYM *found;
 
-    found = 0;
-    for (i = 0; i < nsyms; i++) {
-        if ('=' == syms[i].S[0] && w == syms[i].A) {
-            found = i + 1;
+    found = FindSymP(S, loctab, loctab0, nloctab);
+    if (found) return found;
+    return FindSymP(S, symtab, 0, nsymtab);
+}
+
+/* literals always in global symbol table */
+SYM *FindSymByA(Word w)
+{
+    int i;
+    SYM *found;
+
+    found = NULL;
+    for (i = 0; i < nsymtab; i++) {
+        if ('=' == symtab[i].S[0] && w == symtab[i].A) {
+            found = &symtab[i];
             break;
         }
     }
-    TraceA("    FIND.SYM=%d RESULT=%d", w2i(w), found);
+    TraceA("    FIND.SYM=%d RESULT=%d", w2i(w), found ? 1 : 0);
     if (found)
-        TraceA("    A=%d D=%s", w2i(syms[found-1].A), ONOFF(syms[found-1].D));
+        TraceA("    A=%d D=%s", w2i(found->A), ONOFF(found->D));
     return found;
 }
 
@@ -3604,44 +3638,20 @@ int ResolveAdr(Word adr, Word w)
 }
 
 
-int LSYM;	/* last DefineSym() result */
+SYM *LSYM;	/* last DefineSym() result */
 Word LREF;	/* last reference to just defined sym */
-int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
+
+int DefineSymIdxP(SYM *syms, int *p_nsyms, int maxlen, const char *S, Word w, Toggle defd, SYMTYPE typ)
 {
-	Toggle islocal;
-	Word adr;
+    int nsyms;
 
-    ASSERT(found || (!found && S));
-
-    if (found && NULL == S)
-        S = syms[found-1].S;
-    islocal = IsLocalSym(S);
-    ASSERT(!islocal);
-
-	adr = SM_NOADDR;
-    if (found) {
-        /* TAB ARG
-         * D 	D	DUPSYM
-         * D 	U	ASSERT
-         * U 	D	got value
-         * U 	U	just another ref in the chain, handle elswhere
-         */
-        if (syms[found-1].D && defd) {
-            syms[found-1].N = w;
-            return AsmError(EA_DUPSYM);
-        }
-        ASSERT(OFF == syms[found-1].D && ON == defd);
-	    N = syms[found-1].N;
-	    TraceA("    %s '%s' DEFINED %c%05o (CHAIN %c%05o)",
-	            "FUTURE.REF", S, PLUS(w), MAG(w), PLUS(N), MAG(N));
-	    LREF = adr = syms[found-1].A = syms[found-1].N;
-	    FREF = 'L';
-        syms[found-1].N = w;
-        syms[found-1].D = ON;
-        return ResolveAdr(adr, w);
-    }
     ASSERT(NULL != S);
-    if (NSYMS == nsyms) {
+    ASSERT(NULL != syms);
+    ASSERT(NULL != p_nsyms);
+
+    nsyms = *p_nsyms;
+
+    if (maxlen == nsyms) {
         AsmError(EA_TABFUL);
         return AsmError(EA_INVSYM);
     }
@@ -3652,14 +3662,70 @@ int DefineSymIdx(int found, const char *S, Word w, Toggle defd, char typ)
     syms[nsyms].A = SM_NOADDR;
     syms[nsyms].D = defd;
     syms[nsyms].T = typ;
+    LSYM = &syms[nsyms];
     nsyms++;
-    LSYM = nsyms;
+
+    *p_nsyms = nsyms;
     return 0;
 }
 
-int DefineSym(const char *S, Word w, Toggle defd, char typ)
+int DefineSymIdx(SYM *found, const char *S, Word w, Toggle defd, SYMTYPE typ)
 {
-    int found;
+	Toggle islocal;
+	Word adr;
+
+    ASSERT(NULL != found || (NULL == found && NULL != S));
+
+    if (NULL != found && NULL == S)
+        S = found->S;
+    islocal = IsLocalSym(S);
+    ASSERT(!islocal);
+
+    LSYM = NULL;
+
+	adr = SM_NOADDR;
+    if (found) {
+        /* TAB ARG
+         * D 	D	DUPSYM
+         * D 	U	ASSERT
+         * U 	D	got value
+         * U 	U	just another ref in the chain, handle elswhere
+         */
+
+        /* defined EQU could be redefined */
+        if (SYM_EQU == found->T && found->D) {
+            found->N = w;
+            return 0;
+        }
+        if (found->D && defd) {
+            found->N = w;
+            return AsmError(EA_DUPSYM);
+        }
+        ASSERT(OFF == found->D && ON == defd);
+
+        /*
+         * always overwrite typ
+         * --------------------
+         * a) may be unknown LOC
+         * b) future ref. SYM_LOC which is resolved by SYM_EQU
+         *
+         */
+        found->T = typ;
+	    N = found->N;
+	    TraceA("    %s '%s' DEFINED %c%05o (CHAIN %c%05o)",
+	            "FUTURE.REF", S, PLUS(w), MAG(w), PLUS(N), MAG(N));
+	    LREF = adr = found->A = found->N;
+	    FREF = 'L';
+        found->N = w;
+        found->D = ON;
+        return ResolveAdr(adr, w);
+    }
+    return DefineSymIdxP(symtab, &nsymtab, NSYMS, S, w, defd, typ);
+}
+
+int DefineSym(const char *S, Word w, Toggle defd, SYMTYPE typ)
+{
+    SYM *found;
 
     TraceA("    DEFINE SYM '%s'", S);
     if ('=' == S[0]) {
@@ -3670,25 +3736,39 @@ int DefineSym(const char *S, Word w, Toggle defd, char typ)
     return DefineSymIdx(found, S, w, defd, typ);
 }
 
+/* always in loctab[] */
+int DefineLocalSym(const char *S, SYMTYPE typ)
+{
+    SYM *found;
+
+    TraceA("    DEFINE LOCAL SYM '%s'", S);
+    found = FindSymP(S, loctab, loctab0, nloctab);
+    if (found) {
+        TraceA("    DUPLICATE LOCAL SYM '%s'", S);
+        return AsmError(EA_DUPSYM);
+    }
+    return DefineSymIdxP(loctab, &nloctab, NLOCSYMS, S, SM_NOADDR, OFF, typ);
+}
+
 int localIdx(const char *s)
 {
     ASSERT(IsLocalSym(s));
 
-    return locbase + s[0] - '0';
+    return locals0 + s[0] - '0';
 }
 
-Word getLocal(const char *s)
+Word getLocal(LOCSYM *p, const char *s)
 {
-    int x;
     Word ret;
 
-    x = localIdx(s);
+    ASSERT(NULL != p);
+
     ret = SM_NOADDR;
 
     switch (s[1]) {
-    case 'B': ret = locals[x].B; break;
-    case 'H': ret = locals[x].H; break;
-    case 'F': ret = locals[x].F; break;
+    case 'B': ret = p->B; break;
+    case 'H': ret = p->H; break;
+    case 'F': ret = p->F; break;
     default:
         ASSERT(OFF);
     }
@@ -3696,16 +3776,14 @@ Word getLocal(const char *s)
     return ret;
 }
 
-void setLocal(const char *s, Word w)
+void setLocal(LOCSYM *p, const char *s, Word w)
 {
-    int x;
-
-    x = localIdx(s);
+    ASSERT(NULL != p);
 
     switch (s[1]) {
-    case 'B': locals[x].B = w; break;
-    case 'H': locals[x].H = w; break;
-    case 'F': locals[x].F = w; break;
+    case 'B': p->B = w; break;
+    case 'H': p->H = w; break;
+    case 'F': p->F = w; break;
     default:
         ASSERT(OFF);
     }
@@ -3716,12 +3794,15 @@ int ShowLocal(int i, char typ)
     Word adr;
     char s[3];
     Toggle defd;
+    LOCSYM *p;
 
     s[0] = '0' + i;
     s[1] = typ;
     s[2] = 0;
 
-    adr = getLocal(s);
+    p = &locals[localIdx(s)];
+
+    adr = getLocal(p, s);
     defd = TONOFF(SM_NOADDR != adr);
 
     if (defd) {
@@ -3745,14 +3826,15 @@ void ShowLocalSyms(const char *msg)
     TraceA("****************");
 }
 
-void InitLocalSyms(void)
+void InitLocalSyms(int newbase)
 {
     int i;
 
-    for (i = locbase; i < locbase + 10; i++) {
-        locals[i-locbase].B = SM_NOADDR;
-        locals[i-locbase].H = SM_NOADDR;
-        locals[i-locbase].F = SM_NOADDR;
+    locals0 = newbase;
+    for (i = locals0; i < locals0 + 10; i++) {
+        locals[i].B = SM_NOADDR;
+        locals[i].H = SM_NOADDR;
+        locals[i].F = SM_NOADDR;
     }
 }
 
@@ -3792,9 +3874,11 @@ void ShowMacExp(int x)
 
 Word AtomicExpr(void)
 {
-    int found;
+    SYM *found;
     Word ret = 0;
     Toggle localB;
+
+    XL = NULL; XS = NULL;
 
     UNDSYM = OFF;
     GetSym();
@@ -3825,17 +3909,17 @@ Word AtomicExpr(void)
                 UNDSYM = ON;
             }
             TraceA("    ATOMICEXPR=%c%010o", PLUS(ret), MAG(ret));
-            SX = x + 1;
+            XL = &locals[x];
             return ret;
         }
-        SX = found = FindSym(S);
+        XS = found = FindSym(S);
         if (found) {
-            if (OFF == syms[found-1].D) {
+            if (OFF == found->D) {
                 if (localB)
                     AsmError(EA_UNDBCK);
                 UNDSYM = ON; /* FUTURE.REF */
             } else {
-                ret = syms[found-1].N;
+                ret = found->N;
             }
         } else {
             if (IsLocalSym(S))
@@ -3958,26 +4042,27 @@ Word Apart(void)
                 for (i = 0; i < LEND - LBEG; i++)
                     S[i] = LBEG[i];
                 TraceA("    LIT='%s' V=%c%010o", S, PLUS(v), MAG(v));
-                UNDSYM = ON; SX = ZLITERALS ? FindSymByA(v) : 0;
+                UNDSYM = ON; XS = ZLITERALS ? FindSymByA(v) : NULL;
 	        } else
 	        	AsmError(EA_MAXLEN);
 	    }
         if (UNDSYM) {
-            int islocal = IsLocalSym(S);
-            if (SX) {
+            if (XS || XL) {
                 /* already defined future.ref */
-                if (islocal) {
-                    v = getLocal(S);
-                    setLocal(S, P);
+                if (XL) {
+                    v = getLocal(XL, S);
+                    setLocal(XL, S, P);
                 } else {
-                    v = syms[SX-1].N;
-                    syms[SX-1].N = P;
+                    v = XS->N;
+                    XS->N = P;
                 }
             } else {
-                /* future.ref */
-                DefineSym(S, P, OFF, 'L');
-                if ('=' == S[0])
-                    syms[LSYM-1].A = v;
+                /* future.ref: can be EQU as well */
+                DefineSym(S, P, OFF, SYM_LOC);
+                if ('=' == S[0]) {
+                    ASSERT(NULL != LSYM);
+                    LSYM->A = v;
+                }
                 v = SM_NOADDR;
             }
             if (!IsLocalSym(S))
@@ -4097,6 +4182,42 @@ void PrintList(char *needs, Word w, Word OLDP, const char *line)
     Print("|%s\n", line);
 }
 
+void CheckUndefSyms(SYM *syms, int zsyms, int nsyms)
+{
+    int i;
+    char needs[3];
+
+    NE = 0;
+    StrSet(EC, ' ', sizeof(EC)-1);
+    FREF = ' ';
+    NEEDP = 'P'; NEEDL = 'L';
+    for (i = zsyms; i < nsyms; i++) {
+        /* unused loctab[] symbols */
+        if (SYM_UNDEF == syms[i].T)
+            continue;
+        if (!syms[i].D) {
+            EC[0] = EA_UNDSYM;
+            NEEDAWS = 0;
+            LREF = syms[i].N;
+            PrintList(needs, 0, SM_NOADDR, syms[i].S);
+        }
+    }
+    /* check undefined locals */
+    /* iff xF contains an address, then it is unresolved   */
+    /*     xB always resolved or undefined when referenced */
+    S[1] = 'F'; S[2] = 0;
+    for (i = locals0; i < locals0 + 10; i++) {
+        if (SM_NOADDR != locals[i].F) {
+            S[0] = '0' + i;
+            EC[0] = EA_UNDSYM;
+            NEEDAWS = 0;
+            LREF = locals[i].F;
+            PrintList(needs, 0, SM_NOADDR, S);
+        }
+    }
+    EC[0] = ' ';
+}
+
 void DefineLiterals(void)
 {
     int i;
@@ -4107,25 +4228,21 @@ void DefineLiterals(void)
     StrSet(EC, ' ', sizeof(EC)-1);
     FREF = ' ';
     NEEDP = 'P'; NEEDL = 'L';
-    for (i = 0; i < nsyms; i++) {
-        if (IsLocalSym(syms[i].S))
-            continue;
-        if ('=' == syms[i].S[0]) {
-            ASSERT(!syms[i].D);
+    for (i = 0; i < nsymtab; i++) {
+        /* TBD: local symbols */
+        if ('=' == symtab[i].S[0]) {
+            ASSERT(!symtab[i].D);
             EC[0] = ' ';
             NEEDAWS = 'W';
-            w = syms[i].A;
-            DefineSymIdx(i+1 /*syms[i].S*/, syms[i].S, P, ON, 'L');
-            PrintList(needs, w, P, syms[i].S);
+            w = symtab[i].A;
+            DefineSymIdx(&symtab[i], symtab[i].S, P, ON, SYM_LOC);
+            PrintList(needs, w, P, symtab[i].S);
             MemWrite(P, FULL, w); smINC(&P);
-        } else if (!syms[i].D) {
-            EC[0] = EA_UNDSYM;
-            NEEDAWS = 0;
-            LREF = syms[i].N;
-            PrintList(needs, 0, SM_NOADDR, syms[i].S);
         }
     }
     EC[0] = ' ';
+
+    CheckUndefSyms(symtab, 0, nsymtab);
 }
 
 void DumpSymbols(const char *path)
@@ -4141,12 +4258,12 @@ void DumpSymbols(const char *path)
     }
     LPTSAV = LPT; LPT = fd;
 
-    for (i = 0; i < nsyms; i++) {
-        s = syms[i].S;
-        if (IsLocalSym(s) || !syms[i].D)
+    for (i = 0; i < nsymtab; i++) {
+        s = symtab[i].S;
+        if (!symtab[i].D)
             continue;
-        PrintLPT("%c ", syms[i].T);
-        wprint(syms[i].N);
+        PrintLPT("%c ", symtab[i].T);
+        wprint(symtab[i].N);
         PrintLPT("%10s\n", s);
     }
     fclose(LPT);
@@ -4183,10 +4300,10 @@ void ReadSymbols(const char *path)
     fclose(fd);
 }
 
-int XH;
-void DefineLocationSym(Word w, char typ)
+LOCSYM *XH;
+void DefineLocationSym(Word w, SYMTYPE typ)
 {
-
+    XH = NULL;
     if (IsLocalSym(LOCATION)) {
         int x = localIdx(LOCATION);
         if ('H' != LOCATION[1])
@@ -4199,7 +4316,7 @@ void DefineLocationSym(Word w, char typ)
             ResolveAdr(locals[x].F, w);
             locals[x].F = SM_NOADDR;
         }
-        XH = x+1;
+        XH = &locals[x];
         locals[x].H = w;
     } else
         DefineSym(LOCATION, w, ON, typ);
@@ -4239,6 +4356,13 @@ void PushMacExp(void)
         for (i = 0; i < MACNARGS; i++) {
             MEXP[MEXPLVL].VALS[i] = MACVALS[i];
         }
+        /* save local env, setup new */
+        MEXP[MEXPLVL].loctab0 = loctab0;
+        MEXP[MEXPLVL].nloctab = nloctab;
+        MEXP[MEXPLVL].locals0 = locals0;
+
+        InitLocalSyms(locals0 + 10);
+        loctab0 = nloctab;
     }
 }
 
@@ -4255,6 +4379,13 @@ void PopMacExp(void)
         for (i = 0; i < MACNARGS; i++) {
             MACVALS[i] = MEXP[MEXPLVL].VALS[i];
         }
+        /* restore local env */
+        CheckUndefSyms(loctab, loctab0, nloctab);
+
+        /* Info("POPMACEXP"); */
+        loctab0 = MEXP[MEXPLVL].loctab0;
+        nloctab = MEXP[MEXPLVL].nloctab;
+        locals0 = MEXP[MEXPLVL].locals0;
         --MEXPLVL;
     }
 }
@@ -4305,7 +4436,7 @@ int Assemble(const char *line)
     E = OFF;
     NE = 0; StrSet(EC, ' ', sizeof(EC)-1); FREF = ' ';
     NEEDAWS = 0; NEEDP = 'P'; NEEDL = 0;
-    XH = 0;
+    XH = NULL;
     IGNORELOC = OFF; DOIFNEST = OFF;
 
 	OLDP = P;
@@ -4316,7 +4447,7 @@ int Assemble(const char *line)
     found = (OFF == SKIP && 0 == SAVMAC) ? FindMac(OP) : 0;
     if (found) {
         if (' ' != LOCATION[0]) {
-            DefineLocationSym(P, 'L');
+            DefineLocationSym(P, SYM_LOC);
         }
         PushMacExp();
         LockMac(EXPMAC = found);
@@ -4416,14 +4547,15 @@ int Assemble(const char *line)
         if (0 == SAVMAC) {
             if (!EXPMAC) {
                 AsmError(EA_UNKOPC);
-            }
-            GetSym();
-            while (T != TOK_MTY) {
-                /* S contains the sym */
-                if (' ' != CH) ENSURE(',');
+            } else {
                 GetSym();
+                while (TOK_MTY != T) {
+                    DefineLocalSym(S, SYM_UNDEF);
+                    if (' ' != CH) ENSURE(',');
+                    GetSym();
+                }
+                goto OpEnd;
             }
-            goto OpEnd;
         }
     } else if (!strcmp(OP, "ENDM")) {
         IGNORELOC = ON;
@@ -4495,7 +4627,7 @@ int Assemble(const char *line)
         if (OFF == SKIP) {
             DOIFNEST = ON;
             GetSym();
-            COND = TONOFF(0 < FindSym(S));
+            COND = TONOFF(NULL != FindSym(S));
         }
         IFNEST++;
     } else if (!strcmp(OP, "ELSE")) {
@@ -4537,11 +4669,11 @@ int Assemble(const char *line)
     if (!strcmp(OP, "EQU ")) {
         w = Wvalue();
         if (' ' != LOCATION[0])
-            DefineLocationSym(w, 'E');
+            DefineLocationSym(w, SYM_EQU);
         NEEDAWS = 'W'; NEEDP = 0;
     } else {
         if (!IGNORELOC && ' ' != LOCATION[0])
-            DefineLocationSym(P, 'L');
+            DefineLocationSym(P, SYM_LOC);
         found = FindOp();
         if (found--) {
             C = opcodes[found].c0de; 
@@ -4607,10 +4739,9 @@ OpEnd:
     	AsmError(EA_XTRAOP);
 	}
     if (XH) {
-        XH--;
-        locals[XH].B = locals[XH].H;
-        locals[XH].H = SM_NOADDR;
-        XH = 0;
+        XH->B = XH->H;
+        XH->H = SM_NOADDR;
+        XH = NULL;
     }
 Out:
     if (TRACEA)
@@ -4706,8 +4837,9 @@ int Asm(const char *nm)
     }
     Info("PROCESSING %s", path);
 
-    nsyms = 0; nload = 0; locbase = 0;
-    InitLocalSyms();
+    nsymtab = 0; nload = 0;
+    InitLocalSyms(0);
+    nloctab = 0; loctab0 = 0;
 
     /* Scope 0 always ON, IFLVL points to IFCOND */
     IFSCOPE[0] = ON; IFLVL = 0; IFNEST = 0;
@@ -4727,20 +4859,24 @@ int Asm(const char *nm)
         if (EXPBDY) {
             ASSERT(EXPMAC);
             MacExpand(EXPBDY->LINE, line, MAX_LINE);
-            EXPBDY = EXPBDY->next;
-            if (!EXPBDY) {
-                UnLockMac(EXPMAC);
-                PopMacExp();
-            }
         } else {
             if (!fgets(line, sizeof(line), fd))
                 break;
         }
+
         n = StripLine(line);
         failed += n ? Assemble(line) : 0;
         if (OPEND)
             break;
         LNO++;
+
+        if (EXPBDY) {
+            EXPBDY = EXPBDY->next;
+            if (!EXPBDY) {
+                UnLockMac(EXPMAC);
+                PopMacExp();
+            }
+        }
     }
     fclose(fd);
     Info("ASSEMBLE %s\n", failed ? "FAILED" : "DONE");

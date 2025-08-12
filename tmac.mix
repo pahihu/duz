@@ -1,15 +1,24 @@
 *...+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8
 *LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
+           ORIG 2
+VALUE      EQU  ***
 A          EQU  1
 B          EQU  2
            ORIG 100
+           LOC  A,B,C
 XYZ        MACR A,B=234,C=(SOMETHING LONG),D=ROOST
+           LOC  E,F,G
            CON  2222
            IFD  A
+           JMP  E
            CON  3~B
+E          ORIG *
            ELSE
            ALF  ZANZA
            ENDI
+G          EQU  E+2
+G          EQU  42
+           ENT2 G
            ENDM
 MEX1       MACR INDEX
            LD~INDEX  TABLE~INDEX
@@ -23,6 +32,9 @@ START      ENTA 2
            ENTX 0
            LSUB D1
            LADD D2
+2H         EQU  10
+2H         MOVE 2F(2B)
+2H         EQU  2B-3
 IDX4       MEX1 INDEX=4
            MEX1 4
            MEX1 5
@@ -57,5 +69,6 @@ D1         CON  0
            CON  1
 D2         CON  0
            CON  2
+           JMP  2F
            HLT
            END  START
