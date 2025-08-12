@@ -47,6 +47,7 @@
  *              local symbol environment for locals and LOCs
  *              EQU sets the value, not defines
  *              detect undefined xF
+ *              fixed CMPx opcodes
  *  250811AP    renamed smDADD to smLADD
  *              added LADD, LSUB (F=0:7), LCMP (F=0:7)
  *              added DADD, DSUB, DMUL, DDIV, DCMP (F=1:0) skeletons
@@ -3089,11 +3090,11 @@ static struct {
 
 	{"CMPA", MM(070,05)},
 	{"CMP1", MM(071,05)},
-	{"CMP1", MM(072,05)},
-	{"CMP1", MM(073,05)},
-	{"CMP1", MM(074,05)},
-	{"CMP1", MM(075,05)},
-	{"CMP1", MM(076,05)},
+	{"CMP2", MM(072,05)},
+	{"CMP3", MM(073,05)},
+	{"CMP4", MM(074,05)},
+	{"CMP5", MM(075,05)},
+	{"CMP6", MM(076,05)},
 	{"CMPX", MM(077,05)},
 
 	{"FCMP", MM(070,06)},
