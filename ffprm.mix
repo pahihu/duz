@@ -1,0 +1,52 @@
+* EXAMPLE PROGRAM ... TABLE OF PRIMES
+* TYPED ON A TERMINAL
+L EQU 500               THE NUMBER OF PRIMES TO FIND
+PRINTER EQU 18          UNIT NUMBER OF THE LINE PRINTER
+PRIME EQU 99            MEMORY AREA FOR TABLE OF PRIMES
+BUF0 EQU 2000           MEMORY AREA FOR BUFFER(0)
+BUF1 EQU BUF0+25        MEMORY AREA FOR BUFFER(1)
+ ORIG 3000
+START IOC 0(PRINTER)    SKIP TO NEW PAGE.
+ LD1 =1-L=              P1. START TABLE. J := 1.
+ LD2 =3=                    N := 3.
+2H INC1 1               P2. N IS PRIME. J := J + 1.
+ ST2 PRIME+L,1             PRIME(J) := N.
+ J1Z 2F                 P3. 500 FOUND?
+4H INC2 2               P4. ADVANCE N.
+ ENT3 2                 P5. K := 2.
+6H ENTA 0               P6. PRIME(K)\N?
+ ENTX 0,2                   RAX := N.
+ DIV PRIME,3                RA := Q, RX := R.
+ JXZ 4B                     TO P4 IF R = 0.
+ CMPA PRIME,3           P7. PRIME(K) LARGE?
+ INC3 1                 P8. ADVANCE K.
+ JG 6B                      TO P6 IF Q > PRIME(K).
+ JMP 2B                     OTHERWISE N IS PRIME.
+2H OUT TITLE(PRINTER)   P9. PRINT LINE.
+ ENT4 BUF1+10               SET B := 1.
+ ENT5 -50                   SET M := 0.
+2H INC5 L+1                 ADVANCE M.
+4H LDA PRIME,5          P10. SET UP LINE. (RIGHT TO LEFT)
+ CHAR
+ STX 0,4(1:4)
+ DEC4 1
+ DEC5 50                    (RI5 GOES DOWN BY 50 UNTIL
+ J5P 4B                         IT BECOMES NONPOSITIVE)
+ OUT 0,4(PRINTER)       P11. PRINT LINE.
+ LD4 24,4                    SWITCH BUFFERS.
+ J5N 2B                      IF RI5 = 0, WE ARE DONE.
+ HLT
+* INITIAL CONTENTS OF TABLE AND BUFFERS
+ ORIG PRIME+1
+ CON 2                  THE FIRST PRIME IS 2.
+ ORIG BUF0-5
+TITLE ALF FIRST         ALPHABETIC INFORMATION FOR
+ ALF   FIVE              TITLE LINE
+ ALF   HUND
+ ALF RED P
+ ALF RIMES
+ ORIG BUF0+24
+ CON BUF1+10            EACH BUFFER REFERS TO THE OTHER.
+ ORIG BUF1+24
+ CON BUF0+10
+ END START              END OF ROUTINE.
