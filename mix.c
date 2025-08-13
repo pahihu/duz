@@ -43,6 +43,7 @@
  *
  *  History:
  *  ========
+ *  250813AP    fixed MOVE default F-spec/Fpart check
  *  250812AP    internal reorg: replaced sym indexes w/ ptr
  *              local symbol environment for locals and LOCs
  *              EQU sets the value, not defines
@@ -2923,7 +2924,7 @@ static struct {
 	{"SLB ", MM(06,06)},
 	{"SRB ", MM(06,07)},
 
-	{"MOVE", MM(07,00)},
+	{"MOVE", MM(07,01)},
 
 	{"LDA ", MM(010,05)},
 	{"LD1 ", MM(011,05)},
@@ -4093,7 +4094,7 @@ Word Fpart(Byte C, Word F)
         v = Expr();
         REQUIRE(')');
     }
-    if (v != F && !RANGE(C,042,046)) {
+    if (v != F && (07 != C) && !RANGE(C,042,046)) {
 	    if (v > 63)
 	        AsmError(EA_TBIGFI);
 	    if (L(v) > R(v))

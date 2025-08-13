@@ -6,6 +6,7 @@ if "%1"=="" goto usage
 
 echo:
 echo ===============================================================
+echo   OPT.INPUT DATA: %1.inp
 echo     TRACE OUTPUT: %1.tre
 echo      PRINTER LOG: %1.log
 echo ===============================================================
@@ -19,6 +20,8 @@ if exist printer del/q printer
 call asml.bat %1
 
 copy/y crld.dek+%1.tra reader
+if exist "%1.inp" copy/y crld.del+%1.tra+%1.inp reader
+if not exist "%1.inp" copy/y crld.del+%1.tra reader
 
 .\mix_ape.exe -g -y %1.sym > %1.tre 2>&1
 

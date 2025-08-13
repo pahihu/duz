@@ -1,11 +1,7 @@
-*...+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8
-*LLLLLLLLL OOOO AAAAA             TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTIIIIIIII
 MAXWDS     EQU  1200                 MAXIMUM LENGTH OF INPUT
 PERM       ORIG *+MAXWDS             THE INPUT PERMUTATION
 ANS        ORIG *+MAXWDS             PLACE FOR ANSWER
 OUTBUF     ORIG *+24                 PLACE FOR PRINTING
-SIZE       ORIG *+1
-START      ORIG *+1
 CARDS      EQU  16                   UNIT NUMBER FOR CARD READER
 PRINTER    EQU  18                   UNIT NUMBER FOR PRINTER
 BEGIN      IN   PERM(CARDS)          READ FIRST CARD.
@@ -88,5 +84,7 @@ CLOSE      MOVE RPREN             R  A6. CLOSE.
            JNE  OPEN              R
            INC1 -3                S  SUPPRESS SINGLETON CYCLES.
            JMP  OPEN              S
+SIZE       ORIG *+1
+START      ORIG *+1
            END  BEGIN
 

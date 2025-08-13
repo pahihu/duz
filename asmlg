@@ -13,6 +13,7 @@ echo
 echo "*** $TS ASMLG TASK STARTED ************************"
 echo
 echo "==============================================================="
+echo "  OPT.INPUT DATA: $inp.inp"
 echo "    TRACE OUTPUT: $inp.tre"
 echo "     PRINTER LOG: $inp.log"
 echo "==============================================================="
@@ -28,6 +29,10 @@ rm -f printer
 if [ -s $inp.tra ];
 then
   cat crld.dek $inp.tra >reader
+  if [ -s $inp.inp ];
+  then
+    cat $inp.inp >>reader
+  fi
   ./mix_ape.exe -g -y $inp.sym 2>&1 | tee $inp.tre
 
   if [ -s printer ];

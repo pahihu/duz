@@ -1,0 +1,88 @@
+MAXWDS     EQU  1200                 MAXIMUM LENGTH OF INPUT
+X          ORIG *+MAXWDS             THE TABLE OF NAMES
+T          ORIG *+MAXWDS             THE AUXILIARY STATE TABLE
+PERM       ORIG *+MAXWDS             THE INPUT PERMUTATION
+ANS        EQU  PERM                 PLACE FOR ANSWER
+OUTBUF     ORIG *+24                 PLACE FOR PRINTING
+CARDS      EQU  16                   UNIT NUMBER FOR CARD READER
+PRINTER    EQU  18                   UNIT NUMBER FOR PRINTER
+BEGIN      IN   PERM(CARDS)          READ FIRST CARD.
+           ENT2 0
+           LDA  EQUALS
+1H         JBUS *(CARDS)             WAIT FOR CYCLE TO COMPLETE.
+           CMPA PERM+15,2
+           JE   *+2                  IS IT THE LAST CARD?
+           IN   PERM+16,2(CARDS)     NO, READ ANOTHER.
+           ENT1 OUTBUF
+           JBUS *(PRINTER)           PRINT A COPY OF
+           MOVE PERM,2(16)              THE INPUT CARD.
+           OUT  OUTBUF(PRINTER)
+           JE   1F
+           INC2 16
+           CMP2 =MAXWDS-16=
+           JLE  1B                   REPEAT UNTIL INPUT IS COMPLETE.
+           HLT  666                  AT THIS POINT, RI2 WORDS OF
+1H         INC2 15                1    INPUT ARE IN PERM, PERM + 1,...
+           ENT3 0                 1    AND WE HAVEN'T SEEN ANY NAMES YET.
+RIGHT      ENTX 0                 A  SET Z := 0.
+SCAN       DEC2 1                 B  B2. NEXT ELEMENT.
+           LDA  PERM,2            B
+           JAZ  CYCLE             B  SKIP OVER BLANKS.
+           CMPA RPREN             C
+           JE   RIGHT             C  IS THE NEXT ELEMENT ")"?
+           CMPA LPREN             D
+           JE   LEFT              D  IS IT "("?
+           ENT4 1,3               E  PREPARE FOR THE SEARCH.
+           STA  X                 E  STORE AT BEGINNING OF TABLE.
+2H         DEC4 1                 F  SEARCH THROUGH NAMES TABLE.
+           CMPA X,4               F
+           JNE  2B                F  REPEAT UNTIL MATCH FOUND.
+           J4P  FOUND             G  HAS THE NAME APPEARED BEFORE?
+           INC3 1                 H  NO; INCREASE THE TABLE SIZE.
+           STA  X,3               H  INSERT THE NAME NAME XN.
+           ST3  T,3               H  SET T(N) := N.
+           ENT4 0,3               H    I := N.
+FOUND      LDA  T,4               J  B3. CHANGE T(I).
+           STX  T,4               J  STORE Z.
+           SRC  5                 J  SET Z.
+           JANZ SCAN              J
+           ENT1 0,4               K  IF Z WAS ZERO, SET J := I.
+           JMP  SCAN              K
+LEFT       STX  T,1               L  B4. CHANGE T(J).
+CYCLE      J2P  SCAN              P  RETURN TO B2, UNLESS FINISHED.
+*
+OUTPUT     ENT1 ANS               1  ALL INPUT HAS BEEN SCANNED.
+           J3Z  DONE              1  THE X AND T TABLES CONTAIN THE ANSWER.
+1H         LDAN X,3               Q  NOW WE CONSTRUCT CYCLE NOTATION.
+           JAP  SKIP              Q  HAS NAME BEEN TAGGED?
+           CMP3 T,3               R  IS THERE A SINGLETON CYCLE?
+           JE   SKIP              R
+           MOVE LPREN             S  OPEN A CYCLE.
+2H         MOVE X,3               T
+           STA  X,3               T  TAG THE NAME.
+           LD3  T,3               T  FIND SUCCESSOR OF ELEMENT.
+           LDAN X,3               T
+           JAN  2B                T  IS IT ALREADY TAGGED?
+           MOVE RPREN             W  YES, CYCLE CLOSES.
+SKIP       DEC3 1                 Z  MOVE TO NEXT NAME.
+           J3P  1B                Z
+*                                    ALL ARE TAGGED. NOW COMES THE OUTPUT.
+DONE       CMP1 =ANS=
+           JNE  *+2                  IS ANSWER THE IDENTITY PERMUTATION?
+           MOVE LPREN(2)             IF SO, CHANGE TO '()'.
+           MOVE =0=                  PUT 23 WORDS OF BLANKS AFTER ANSWER.
+           MOVE -1,1(22)
+           ENT3 0
+           OUT  ANS,3(PRINTER)
+           INC3 24
+           LDX  ANS,3                PRINT AS MANY LINES AS NECESSARY.
+           JXNZ *-3
+           HLT
+*
+LPREN      ALF      (                CONSTANTS USED IN THE PROGRAM
+RPREN      ALF  )    
+EQUALS     ALF      =
+SIZE       ORIG *+1
+START      ORIG *+1
+           END  BEGIN
+
