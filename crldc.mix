@@ -5,7 +5,7 @@
 *    C A R D  1    *
 ********************
 *
-BUFF       EQU  29                Buffer area is 0029-0044         Card
+BUFF       EQU  32                Buffer area is 0029-0047         Card
            ORIG 0
 LOC        IN   16(16)            Read in second card.             _O_O6
 READ       IN   BUFF(16)          Read next card.                  _Z_O6

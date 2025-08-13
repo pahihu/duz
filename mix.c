@@ -44,6 +44,8 @@
  *  History:
  *  ========
  *  250813AP    fixed MOVE default F-spec/Fpart check
+ *              fixed RTC scheduling
+ *              crld.dek is now Control Store loader
  *  250812AP    internal reorg: replaced sym indexes w/ ptr
  *              local symbol environment for locals and LOCs
  *              EQU sets the value, not defines
@@ -1891,7 +1893,7 @@ void MemWrite(Word a, int f, Word w)
     signA = SIGN(a); a = MAG(a);
     if (signA) {
         ctlmem[a] = WriteField(ctlmem[a], f, w);
-        if (ADDR_RTC == a) {
+        if (ADDR_RTC == a && MAG(RTC)) {
             Schedule(1000U, DEV_RTC, DO_IOC, 0);
         }
     } else {
@@ -2217,6 +2219,8 @@ void Schedule(unsigned delta, int u, EventType what, Word M)
     unsigned when;
 
     ASSERT(EventH <= MAX_DEVS);
+
+    DEV_TraceIO(u, M, "SCHEDULE START");
 
     ASSERT(0 != delta);
     ASSERT(0 == devs[u].evtNext);
