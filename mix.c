@@ -2052,6 +2052,9 @@ char mix360_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:
 char dec026_m2a[64+1] = " +-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ_=@^'\\?.)]<!:$*[>&;,(\"#%";
 char dec029_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+^!$*);\\],%_>?";
 char cdc731_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+!]$*);^\\,%_>?";	/* CDC 731 029 */
+/* ECMA 7bit code        _0 000000000000000_______________AAAAAAAAAAAAAAAABBBBBBBBBBBBB BBB*/
+/*                                  888888          888888          888888          888 888*/
+/*                       _1 23456789234567 123456789234567 123456789234567 123456789234 567*/
 char sixbit_m2a[64+1] = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_";
 char    bic_m2a[64+1] = "0123456789#@?:>}+ABCDEFGHI.[&(<~|JKLMNOPQR$*-);{ /STUVWXYZ,%!=]\"";
 
