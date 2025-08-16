@@ -19,7 +19,7 @@ $(TARGET): version.h $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lm
 
 version.h: $(SRCS)
-	echo "#define MIX_VERSION \"`date +%Y-%m-%d`\"" >version.h
+	echo "#define MIX_VERSION \"`date +\"%Y-%m-%d %H:%M:%S\"`\"" >version.h
 
 fpexptab: fpexptab.o
 	$(CC) $(LDFLAGS) -o $@ fpexptab.o -lm
