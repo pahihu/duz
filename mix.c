@@ -2045,13 +2045,18 @@ IOC
 
 #define NMIXCHARS   64
 #define NASCCHARS   256
+/*   ZONES: A-12,B-11,0-0       */
+/* NUMERIC: 0,1,2,3,4,5,6,7,8,9 */
 /*		                           1         2         3         4         5         6	 */
 /*		                 0123456789012345678901234567890123456789012345678901234567890123*/
+/*						 _AAAAAAAAAABBBBBBBBBB0000000000_________AAAAAABBBBBB000000______*/
+/*																 888888888888888888888888*/
+/*						 _123456789_123456789_123456789_123456789234567234567234567234567*/
 char    mix_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'????????";
 char mix360_m2a[64+1] = " ABCDEFGHI~JKLMNOPQR|_STUVWXYZ0123456789.,()+-*/=$<>@;:'\"%&#c!^?";
 char dec026_m2a[64+1] = " +-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ_=@^'\\?.)]<!:$*[>&;,(\"#%";
 char dec029_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+^!$*);\\],%_>?";
-char cdc731_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+!]$*);^\\,%_>?";	/* CDC 731 029 */
+char cdc731_m2a[64+1] = " &-0123456789ABCDEFGHIJKLMNOPQR/STUVWXYZ:#@'=\"[.<(+!]$*);^\\,%_>?";	/* CDC 731 029, ANSI X3.26 */
 /* ECMA 7bit code        _0 000000000000000_______________AAAAAAAAAAAAAAAABBBBBBBBBBBBB BBB*/
 /*                                  888888          888888          888888          888 888*/
 /*                       _1 23456789234567 123456789234567 123456789234567 123456789234 567*/
